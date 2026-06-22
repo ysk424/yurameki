@@ -39,21 +39,24 @@ COMPUTE_BACKEND        = 'CUDA'
 COLLISION_MARGIN       = 0.0005
 COLLISION_SEARCH       = 0.003
 POST_COLLISION_ITERATIONS = 4
-STATIC_SUBSTEPS        = 8     # proven Tokoya substep count (current-frame styling)
+# Root/groom startup offset from the body surface — the ONLY addition vs Tokoya.
+# Tokoya plants the hair on a mask surface pushed `_mask_plant.offset_m = 0.001`
+# (1.0 mm) along the normal. Yurameki takes an external groom (no planting), so
+# it can't guarantee that offset; `condition_to_collider` re-establishes it at
+# startup. Everything else (solver, collision, SUBSTEPS=1) stays Tokoya-identical.
+ROOT_OFFSET            = 0.001
 
 
-def condition_to_collider(world_pts, body_name, margin, pps):
-    """Force points inside / within ``margin`` of the collider to sit
-    ``closest + normal*margin`` outside it.
+def condition_to_collider(world_pts, body_name, offset, pps):
+    """Force points inside / within ``offset`` of the collider to sit
+    ``closest + normal*offset`` outside it.
 
-    This is the proven Tokoya precondition (毛根の0.5mmオフセット): a pinned,
+    This is the proven Tokoya precondition (毛根オフセット): a pinned,
     collision-excluded root initialized inside the body drags its whole strand
-    through. Tokoya guaranteed the offset at plant time; Yurameki takes an
-    external groom, so it can't — enforce it at simulation startup instead.
-
-    The predicate (``signed = (p - closest)·normal < margin``) is the same one
-    the collision kernel uses, so a point this pushes is exactly a point the
-    runtime collision would consider penetrating. Returns
+    through. Tokoya guaranteed it at plant time (mask surface 1.0 mm out);
+    Yurameki takes an external groom, so it can't — enforce it at simulation
+    startup instead. ``offset`` is the body-surface clearance (ROOT_OFFSET,
+    1.0 mm), NOT the 0.5 mm collision margin: 0.5 mm is not enough. Returns
     ``(conditioned_world_pts, n_pushed, n_roots_pushed)``.
     """
     from . import _sim_taichi
@@ -70,8 +73,8 @@ def condition_to_collider(world_pts, body_name, margin, pps):
         if loc is None:
             continue
         normal = normal.normalized()
-        if (pv - loc).dot(normal) < margin:
-            corrected = loc + normal * margin
+        if (pv - loc).dot(normal) < offset:
+            corrected = loc + normal * offset
             out[i] = (corrected.x, corrected.y, corrected.z)
             pushed += 1
             if i % pps < 2:
@@ -139,11 +142,11 @@ def run_simulation(curves_obj_name: str, n_steps: int,
     # collider before building the solver, so rest lengths and the pinned
     # roots start from a penetration-free state (proven Tokoya precondition).
     curr_world, n_pushed, n_roots = condition_to_collider(
-        curr_world, BODY_COLLISION_TARGET, COLLISION_MARGIN, POINTS_PER_STRAND
+        curr_world, BODY_COLLISION_TARGET, ROOT_OFFSET, POINTS_PER_STRAND
     )
     if n_pushed:
         print(f'[yurameki/sim] conditioned {n_pushed} points '
-              f'({n_roots} roots) to {COLLISION_MARGIN * 1000:.2f} mm '
+              f'({n_roots} roots) to {ROOT_OFFSET * 1000:.2f} mm '
               f'outside {BODY_COLLISION_TARGET!r}')
 
     curr_vel   = np.zeros_like(curr_world)
@@ -343,7 +346,7 @@ def run_simulation(curves_obj_name: str, n_steps: int,
         new_root_world = curr_world[root_indices]
         sim_out = solver.run_frame(
             dt                = dt,
-            n_substeps        = STATIC_SUBSTEPS,
+            n_substeps        = SUBSTEPS,
             n_iter            = ITERATIONS,
             gravity           = GRAVITY,
             new_root_world    = new_root_world,

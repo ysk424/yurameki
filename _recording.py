@@ -149,12 +149,12 @@ class RecordingManager:
             # roots / near-surface points outside the collider before the solver
             # measures rest lengths.
             positions, n_pushed, n_roots = _wp.condition_to_collider(
-                positions, body_name, _wp.COLLISION_MARGIN, POINTS_PER_STRAND
+                positions, body_name, _wp.ROOT_OFFSET, POINTS_PER_STRAND
             )
             if n_pushed:
                 print(
                     f"[yurameki/record] conditioned {n_pushed} points "
-                    f"({n_roots} roots) to {_wp.COLLISION_MARGIN * 1000:.2f} mm "
+                    f"({n_roots} roots) to {_wp.ROOT_OFFSET * 1000:.2f} mm "
                     f"outside {body_name!r}"
                 )
 
