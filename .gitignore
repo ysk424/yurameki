@@ -4,3 +4,4 @@ __pycache__/
 *.yurameki-cache.npz
 *.abc
 testdata/*.npz
+testdata/body_verts_world.npy

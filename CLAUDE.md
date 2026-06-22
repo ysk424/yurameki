@@ -56,15 +56,50 @@ path (`_sim_warp` + `_collision_warp`); taichi was only the CPU fallback.
 - Cross-check: `--backend CUDA` vs CPU agree to **0.12 mm max** (120 frames).
 - `server/requirements.txt` pins the env.
 
+### Headless body collision — DONE & VALIDATED (2026-06-23)
+
+Collision is now wired into the engine, headless, with the **Tokoya algorithm
+unchanged** (not one kernel line touched). Validated to **~0 penetration over
+the full 450-frame real animation drive**.
+
+**Root cause of the "hair pokes through head" we saw:** NOT the collider being
+unset, and NOT the collision algorithm. Two things, both documented in Tokoya
+`CLAUDE.md` (sections "毛根の0.5mmオフセット", v0.3.2/3.3):
+1. **Roots not 0.5 mm outside the collider.** Tokoya guaranteed this at PLANT
+   time; Yurameki doesn't plant (external groom in), so it was missing. Measured:
+   **1847/4000 roots (46%) buried up to 29 mm inside** CC_Base_Body. Roots are
+   pinned (inverse_mass=0) AND collision-excluded (point<2), so a buried root =
+   strand starts inside = must pass through to get out.
+2. **substeps=1** (hardcoded in `__init__._snapshot_sim_params`) vs the proven
+   **8 substeps / 20 iterations** of the zero-penetration MCP run.
+
+**Fix (proven method, data + settings only):**
+- `testdata/groom_rest_conditioned.npy` — groom pre-conditioned so every point
+  with signed-dist < 0.5 mm (same normal-sign predicate the collision uses) is
+  projected to `closest + normal*0.5mm`. 13.7% of points moved, 0 roots inside.
+- `_collision_warp.py` — `import bpy` made lazy (inside `_evaluated_body_arrays`);
+  added `triangles=(verts,indices)` ctor and `update_mesh(verts)` (refit per
+  frame). **Kernels unchanged.**
+- `engine.py` — `simulate(..., collider, body_frames)`; `run_from_testdata(...,
+  collision=True)` seeds from the conditioned groom, feeds per-frame world body
+  verts, uses substeps=8/iter=20. CLI: `--collision`.
+- Body geometry extracted from the live scene (not the 6 GB abc):
+  `testdata/body_verts_world.npy` (450,225184,3 world, ~1.2 GB) +
+  `body_tris_idx.npy` (449472,3). Topology fixed; verts per frame.
+
+**Validation:** `python server/engine.py --collision --start 0 --end 450`.
+Robust ray-parity inside test, roots excluded, per-frame body: penetration
+**0.00–0.04%** (≈1 stray point / 2800 sampled), deepest ~0–1 mm. One lone
+10 mm outlier at frame 450 (1 point) — transient at the tail; note, not chase.
+Before the fix: **45% inside, 69 mm deep.**
+
 ### Next (not done yet)
 
-- **Collision is OFF.** Warp is now available headless, so wire
-  `_collision_warp.WarpBodyCollider` into the engine. Non-breaking seam:
-  make its top-level `import bpy` lazy and add a `triangles=(verts,indices)`
-  constructor path; feed per-frame triangles from `collider.abc` (read with
-  e.g. the Alembic lib or by converting once). `_evaluated_body_arrays` (bpy)
-  stays as the Blender path. Then the headless sim matches production with
-  body collision.
+- **Apply the same fix to the Blender side** so the user can eyeball it: a
+  `yurameki.condition_groom` operator (roots → 0.5 mm outside the Body) + set
+  the interactive/bake path to substeps=8. Then real-machine visual check in
+  Blender (Simulate / bake range, confirm no head poke-through).
+- Investigate the single frame-450 10 mm outlier if it recurs.
 - Alembic OUTPUT (geometry cache) — deferred; npz for now.
 - Stage 2 = C++ (Taichi AOT) only after the algorithm is frozen. Not now.
 

@@ -64,7 +64,15 @@ def _make_solver(params, n_total, n_strands, groom_rest):
     return get_solver_class(backend)(**kwargs)
 
 
-def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
+def simulate(groom_rest, head_world, params, progress=None,
+             collider=None, body_frames=None) -> np.ndarray:
+    """Drive hair roots by head motion and run the XPBD solver.
+
+    If ``collider`` (a WarpBodyCollider) and ``body_frames`` (n_frames, nv, 3)
+    world-space body vertices are given, body collision is enabled and the
+    collider's mesh is refit each frame. Collision is the unchanged Tokoya
+    method; here it is fed headless geometry per frame.
+    """
     pps = int(params["pps"])
     n_total = groom_rest.shape[0]
     if n_total % pps:
@@ -81,6 +89,7 @@ def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
 
     dt = float(params["fps_base"]) / float(params["fps"])
     gravity = np.asarray(params["gravity"], np.float32)
+    post_iters = int(params.get("post_collision_iterations", 4))
 
     curr = groom_rest.astype(np.float32).copy()
     vel = np.zeros_like(curr)
@@ -91,6 +100,10 @@ def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
         T = head_world[fi] @ H1_inv
         roots_f = _apply(T, roots1).astype(np.float32)
         point1_f = _apply(T, point1_1).astype(np.float32)
+        body_fn = None
+        if collider is not None and body_frames is not None:
+            collider.update_mesh(body_frames[fi])
+            body_fn = collider
         solver.set_positions_velocities(curr, vel)
         curr = solver.run_frame(
             dt=dt, n_substeps=int(params["substeps"]),
@@ -99,7 +112,8 @@ def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
             seg_ke=params["seg_ke"], root_bend_ke=params["root_bend_ke"],
             bend_ke=params["bend_ke"], damping=params["damping"],
             bending_enabled=params["bending_enabled"],
-            new_point1_world=point1_f, body_collision_fn=None,
+            new_point1_world=point1_f, body_collision_fn=body_fn,
+            post_collision_iterations=post_iters,
         )
         vel = solver.get_velocities_numpy()
         out[fi] = curr
@@ -108,9 +122,32 @@ def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
     return out
 
 
-def run_from_testdata(testdata, out_path, start=None, end=None, overrides=None):
-    """Convenience driver used by the CLI and the server."""
-    groom = np.load(os.path.join(testdata, "groom_rest.npy"))
+def _build_collider(testdata, body_frame0, n_total, params):
+    """Construct the headless WarpBodyCollider from extracted body geometry."""
+    from _collision_warp import WarpBodyCollider
+    idx = np.load(os.path.join(testdata, "body_tris_idx.npy"))
+    return WarpBodyCollider(
+        n_total=n_total, points_per_strand=int(params["pps"]),
+        margin=float(params.get("collision_margin", 0.0005)),
+        search_distance=float(params.get("collision_search", 0.003)),
+        triangles=(body_frame0, idx),
+    )
+
+
+def run_from_testdata(testdata, out_path, start=None, end=None, overrides=None,
+                      collision=False):
+    """Convenience driver used by the CLI and the server.
+
+    collision=True enables body collision: it seeds from the conditioned groom
+    (roots 0.5 mm outside the collider) and feeds per-frame world-space body
+    vertices to the unchanged Tokoya Warp collider.
+    """
+    groom_name = "groom_rest.npy"
+    if collision and os.path.exists(
+        os.path.join(testdata, "groom_rest_conditioned.npy")
+    ):
+        groom_name = "groom_rest_conditioned.npy"
+    groom = np.load(os.path.join(testdata, groom_name))
     head = np.load(os.path.join(testdata, "head_world.npy"))
     params = default_params()
     if overrides:
@@ -118,14 +155,27 @@ def run_from_testdata(testdata, out_path, start=None, end=None, overrides=None):
     f0 = 0 if start is None else int(start)
     f1 = head.shape[0] if end is None else int(end)
     head = head[f0:f1]
+
+    collider = None
+    body_frames = None
+    if collision:
+        body_frames = np.load(
+            os.path.join(testdata, "body_verts_world.npy"), mmap_mode="r"
+        )[f0:f1]
+        collider = _build_collider(
+            testdata, np.asarray(body_frames[0]), groom.shape[0], params
+        )
+
     out = simulate(groom, head, params,
-                   progress=lambda i, n: print(f"  frame {i}/{n}", flush=True))
+                   progress=lambda i, n: print(f"  frame {i}/{n}", flush=True),
+                   collider=collider, body_frames=body_frames)
     np.savez_compressed(out_path, positions=out, frame_start=f0, pps=params["pps"])
     finite = np.isfinite(out).all()
     moved = float(np.linalg.norm(out[-1] - out[0], axis=1).max())
     return {
         "out": out_path, "shape": list(out.shape),
         "finite": bool(finite), "max_tip_motion_m": moved,
+        "collision": bool(collision), "groom": groom_name,
     }
 
 
@@ -137,10 +187,24 @@ if __name__ == "__main__":
     ap.add_argument("--start", type=int, default=None)
     ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--backend", default="CPU", choices=["CPU", "CUDA", "VULKAN"])
+    ap.add_argument("--collision", action="store_true",
+                    help="enable body collision (requires CUDA backend)")
+    ap.add_argument("--substeps", type=int, default=None)
+    ap.add_argument("--iterations", type=int, default=None)
     args = ap.parse_args()
+
+    overrides = {"backend": args.backend}
+    if args.collision:
+        # Proven Tokoya body-collision settings (zero-penetration MCP run).
+        overrides.update(backend="CUDA", substeps=8, iterations=20)
+    if args.substeps is not None:
+        overrides["substeps"] = args.substeps
+    if args.iterations is not None:
+        overrides["iterations"] = args.iterations
+
     import time
     t = time.time()
     r = run_from_testdata(args.testdata, args.out, args.start, args.end,
-                          overrides={"backend": args.backend})
+                          overrides=overrides, collision=args.collision)
     r["seconds"] = round(time.time() - t, 2)
     print(json.dumps(r, indent=2))

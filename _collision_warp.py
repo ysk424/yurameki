@@ -1,7 +1,12 @@
-"""CUDA body collision using NVIDIA Warp's triangle-mesh queries."""
+"""CUDA body collision using NVIDIA Warp's triangle-mesh queries.
+
+The collision kernels are unchanged from Tokoya. The class can be fed body
+geometry two ways: from Blender (``body_name`` -> evaluated mesh, lazy ``bpy``
+import) or headless (``triangles=(vertices, indices)`` in world space). For an
+animated body, call ``update_mesh(vertices)`` once per frame.
+"""
 from __future__ import annotations
 
-import bpy
 import numpy as np
 import warp as wp
 
@@ -136,6 +141,7 @@ def _segment_collision(
 
 
 def _evaluated_body_arrays(body_name: str):
+    import bpy
     body = bpy.data.objects.get(body_name)
     if body is None or body.type != "MESH":
         raise ValueError(f"Body mesh {body_name!r} not found")
@@ -166,11 +172,12 @@ def _evaluated_body_arrays(body_name: str):
 class WarpBodyCollider:
     def __init__(
         self,
-        body_name: str,
         n_total: int,
         points_per_strand: int,
         margin: float,
         search_distance: float,
+        body_name: str = None,
+        triangles=None,
     ):
         if not wp.is_cuda_available():
             raise RuntimeError("NVIDIA Warp CUDA device is unavailable")
@@ -183,11 +190,15 @@ class WarpBodyCollider:
         self.margin = float(margin)
         self.search_distance = float(search_distance)
 
-        vertices, indices = _evaluated_body_arrays(body_name)
+        if triangles is not None:
+            vertices, indices = triangles
+            vertices = np.ascontiguousarray(vertices, dtype=np.float32)
+            indices = np.ascontiguousarray(indices, dtype=np.int32).reshape(-1)
+        else:
+            vertices, indices = _evaluated_body_arrays(body_name)
+        self.points = wp.array(vertices, dtype=wp.vec3, device=self.device)
         self.mesh = wp.Mesh(
-            points=wp.array(
-                vertices, dtype=wp.vec3, device=self.device
-            ),
+            points=self.points,
             indices=wp.array(
                 indices, dtype=wp.int32, device=self.device
             ),
@@ -201,6 +212,15 @@ class WarpBodyCollider:
         self.velocities = wp.empty(
             n_total, dtype=wp.vec3, device=self.device
         )
+
+    def update_mesh(self, vertices):
+        """Refresh body vertex positions in world space (topology fixed).
+
+        Call once per frame for an animated body. Indices/topology are
+        unchanged; only the BVH is refit.
+        """
+        self.points.assign(np.ascontiguousarray(vertices, dtype=np.float32))
+        self.mesh.refit()
 
     def __call__(
         self,
