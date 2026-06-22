@@ -1,0 +1,30 @@
+schema_version = "1.0.0"
+
+id = "yurameki"
+version = "0.1.0"
+name = "Yurameki"
+tagline = "Yurameki (揺らめき) — Taichi XPBD hair simulation and bake"
+maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
+type = "add-on"
+
+blender_version_min = "5.1.0"
+
+license = ["SPDX:MIT"]
+
+tags = ["Physics"]
+
+platforms = ["windows-x64"]
+
+[build]
+paths = [
+    "__init__.py",
+    "ui.py",
+    "_world_passthrough.py",
+    "_recording.py",
+    "_collision_warp.py",
+    "_sim_warp.py",
+    "_sim_taichi.py",
+    "yurameki_defaults.json",
+    "README.md",
+    "LICENSE",
+]

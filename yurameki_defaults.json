@@ -1,0 +1,12 @@
+{
+    "SPRING_KE":             1000000000.0,
+    "DAMPING":               0.08,
+    "PARTICLE_MASS":         0.1,
+    "GRAVITY":               [0.0, 0.0, -9.81],
+    "ITERATIONS":            10,
+    "INTERPOLATION_MAG":     1,
+    "BENDING_ENABLED":       false,
+    "ROOT_BENDING_KE":       2000.0,
+    "BENDING_KE":            10.0,
+    "BODY_COLLISION_TARGET": "CC_Base_Body"
+}
