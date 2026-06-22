@@ -39,6 +39,44 @@ COMPUTE_BACKEND        = 'CUDA'
 COLLISION_MARGIN       = 0.0005
 COLLISION_SEARCH       = 0.003
 POST_COLLISION_ITERATIONS = 4
+STATIC_SUBSTEPS        = 8     # proven Tokoya substep count (current-frame styling)
+
+
+def condition_to_collider(world_pts, body_name, margin, pps):
+    """Force points inside / within ``margin`` of the collider to sit
+    ``closest + normal*margin`` outside it.
+
+    This is the proven Tokoya precondition (毛根の0.5mmオフセット): a pinned,
+    collision-excluded root initialized inside the body drags its whole strand
+    through. Tokoya guaranteed the offset at plant time; Yurameki takes an
+    external groom, so it can't — enforce it at simulation startup instead.
+
+    The predicate (``signed = (p - closest)·normal < margin``) is the same one
+    the collision kernel uses, so a point this pushes is exactly a point the
+    runtime collision would consider penetrating. Returns
+    ``(conditioned_world_pts, n_pushed, n_roots_pushed)``.
+    """
+    from . import _sim_taichi
+    from mathutils import Vector
+    bvh = _sim_taichi.build_body_bvh(body_name)
+    if bvh is None:
+        return world_pts, 0, 0
+    out = world_pts.copy()
+    pushed = 0
+    roots_pushed = 0
+    for i in range(len(out)):
+        pv = Vector(out[i].tolist())
+        loc, normal, _, _ = bvh.find_nearest(pv)
+        if loc is None:
+            continue
+        normal = normal.normalized()
+        if (pv - loc).dot(normal) < margin:
+            corrected = loc + normal * margin
+            out[i] = (corrected.x, corrected.y, corrected.z)
+            pushed += 1
+            if i % pps < 2:
+                roots_pushed += 1
+    return out, pushed, roots_pushed
 
 
 def _read_world(data_owner, n_total: int, matrix_world) -> 'np.ndarray | None':
@@ -96,6 +134,18 @@ def run_simulation(curves_obj_name: str, n_steps: int,
     offset_w = eval_w - orig_w
 
     curr_world = eval_w.copy()
+
+    # Startup root check: force buried / near-surface points outside the
+    # collider before building the solver, so rest lengths and the pinned
+    # roots start from a penetration-free state (proven Tokoya precondition).
+    curr_world, n_pushed, n_roots = condition_to_collider(
+        curr_world, BODY_COLLISION_TARGET, COLLISION_MARGIN, POINTS_PER_STRAND
+    )
+    if n_pushed:
+        print(f'[yurameki/sim] conditioned {n_pushed} points '
+              f'({n_roots} roots) to {COLLISION_MARGIN * 1000:.2f} mm '
+              f'outside {BODY_COLLISION_TARGET!r}')
+
     curr_vel   = np.zeros_like(curr_world)
 
     # Build frozen mask for protected strands (all points of those strands stay fixed)
@@ -293,7 +343,7 @@ def run_simulation(curves_obj_name: str, n_steps: int,
         new_root_world = curr_world[root_indices]
         sim_out = solver.run_frame(
             dt                = dt,
-            n_substeps        = SUBSTEPS,
+            n_substeps        = STATIC_SUBSTEPS,
             n_iter            = ITERATIONS,
             gravity           = GRAVITY,
             new_root_world    = new_root_world,

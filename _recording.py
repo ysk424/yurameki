@@ -145,6 +145,18 @@ class RecordingManager:
         else:
             positions = eval_world.copy()
             velocities = np.zeros_like(positions)
+            # Startup root check (proven Tokoya 毛根0.5mm offset): force buried
+            # roots / near-surface points outside the collider before the solver
+            # measures rest lengths.
+            positions, n_pushed, n_roots = _wp.condition_to_collider(
+                positions, body_name, _wp.COLLISION_MARGIN, POINTS_PER_STRAND
+            )
+            if n_pushed:
+                print(
+                    f"[yurameki/record] conditioned {n_pushed} points "
+                    f"({n_roots} roots) to {_wp.COLLISION_MARGIN * 1000:.2f} mm "
+                    f"outside {body_name!r}"
+                )
 
         # Re-recording replaces this frame and everything after it.
         for old_frame in [key for key in self.frames if key >= frame]:
