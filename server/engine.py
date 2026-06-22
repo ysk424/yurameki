@@ -48,9 +48,23 @@ def _apply(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return (h @ T.T)[:, :3]
 
 
-def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
+def _make_solver(params, n_total, n_strands, groom_rest):
+    """CUDA -> Warp solver (production path); CPU/VULKAN -> Taichi."""
+    backend = params["backend"].upper()
+    kwargs = dict(
+        n_total=n_total, n_strands=n_strands, pps=int(params["pps"]),
+        init_pos=groom_rest.astype(np.float32),
+        particle_mass=params["mass"],
+        bending_enabled=params["bending_enabled"],
+    )
+    if backend == "CUDA":
+        from _sim_warp import WarpXPBDSolver
+        return WarpXPBDSolver(**kwargs)
     from _sim_taichi import get_solver_class
+    return get_solver_class(backend)(**kwargs)
 
+
+def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
     pps = int(params["pps"])
     n_total = groom_rest.shape[0]
     if n_total % pps:
@@ -63,13 +77,7 @@ def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
     point1_1 = groom_rest[root_idx + 1]
     H1_inv = np.linalg.inv(head_world[0])
 
-    Solver = get_solver_class(params["backend"])
-    solver = Solver(
-        n_total=n_total, n_strands=n_strands, pps=pps,
-        init_pos=groom_rest.astype(np.float32),
-        particle_mass=params["mass"],
-        bending_enabled=params["bending_enabled"],
-    )
+    solver = _make_solver(params, n_total, n_strands, groom_rest)
 
     dt = float(params["fps_base"]) / float(params["fps"])
     gravity = np.asarray(params["gravity"], np.float32)
@@ -128,9 +136,11 @@ if __name__ == "__main__":
     ap.add_argument("--out", default=os.path.join(_ROOT, "testdata", "hair_sim.npz"))
     ap.add_argument("--start", type=int, default=None)
     ap.add_argument("--end", type=int, default=None)
+    ap.add_argument("--backend", default="CPU", choices=["CPU", "CUDA", "VULKAN"])
     args = ap.parse_args()
     import time
     t = time.time()
-    r = run_from_testdata(args.testdata, args.out, args.start, args.end)
+    r = run_from_testdata(args.testdata, args.out, args.start, args.end,
+                          overrides={"backend": args.backend})
     r["seconds"] = round(time.time() - t, 2)
     print(json.dumps(r, indent=2))

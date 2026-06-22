@@ -45,14 +45,26 @@ transforms, STOP and rethink — don't thrash (that burns tokens).
      pattern. `cli.py` — client. Tested from **CLI and Blender MCP** (Blender as
      a thin client). Hair sim runs fully outside Blender.
 
+### Environment parity (2026-06-22 PM, done)
+
+Policy: install BPY's pip packages into the bare Python 3.13 so PY mirrors BPY.
+Blender 5.1 BPY = Python 3.13.9, **warp-lang 1.13.0** (bundled, CUDA 12.9,
+RTX 5070 Ti sm_120), numpy 2.3.4, NO taichi. Production ran the **Warp CUDA**
+path (`_sim_warp` + `_collision_warp`); taichi was only the CPU fallback.
+- Installed `warp-lang==1.13.0` into bare Python → CUDA works headless.
+- `engine.py` now selects Warp for backend CUDA, Taichi for CPU/VULKAN.
+- Cross-check: `--backend CUDA` vs CPU agree to **0.12 mm max** (120 frames).
+- `server/requirements.txt` pins the env.
+
 ### Next (not done yet)
 
-- **Collision is OFF.** The CUDA path uses NVIDIA Warp, which is NOT installed in
-  standalone Python (`pip install warp-lang`; verify sm_120 / RTX 5070 Ti). The
-  CPU/Vulkan path's `_sim_taichi.build_body_bvh` needs bpy → must be replaced by
-  a Blender-independent BVH (warp `wp.Mesh`, or read `collider.abc` triangles per
-  frame). To stay non-breaking, add a `triangles=(verts,indices)` path to
-  `_collision_warp.WarpBodyCollider` and make its top-level `import bpy` lazy.
+- **Collision is OFF.** Warp is now available headless, so wire
+  `_collision_warp.WarpBodyCollider` into the engine. Non-breaking seam:
+  make its top-level `import bpy` lazy and add a `triangles=(verts,indices)`
+  constructor path; feed per-frame triangles from `collider.abc` (read with
+  e.g. the Alembic lib or by converting once). `_evaluated_body_arrays` (bpy)
+  stays as the Blender path. Then the headless sim matches production with
+  body collision.
 - Alembic OUTPUT (geometry cache) — deferred; npz for now.
 - Stage 2 = C++ (Taichi AOT) only after the algorithm is frozen. Not now.
 
