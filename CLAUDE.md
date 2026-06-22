@@ -5,7 +5,61 @@ This file is a handoff log for Claude Code sessions.
 
 ---
 
-## ⚠️ START HERE — Stage 1 server separation (2026-06-22 PM)
+## ⚠️ START HERE — Real cause of "hair pokes through head" FOUND (2026-06-23 PM)
+
+**The penetration is NOT roots, NOT collision, NOT substeps. It is the WRITEBACK
+through the `Surface Deform` (Deform Curves on Surface) geometry-nodes modifier.**
+
+Decisive measurement (Blender MCP, fresh groom, 1 `run_simulation`, robust
+ray-parity inside test, per point-index 0..8):
+- **Solver output (collision applied): 0% penetration at EVERY point index.**
+  The sim + Tokoya collision is perfectly correct. Roots AND strands are outside.
+- **After `_write_world` + re-eval through the modifier: 2–12% mid-strand
+  penetration (point 3=7.6%, 4=12.4%, 5=5.2%), positions shifted up to 46 mm.**
+
+Why: `_world_passthrough` writes `orig = sim_out - offset` where
+`offset = eval - orig` measured once (Katsura method). That assumes the modifier
+applies a CONSTANT per-point translation. Deform-Curves-on-Surface is a per-point
+RIGID (rotational) transform bound to a surface triangle, so for points far from
+the root a small bind rotation = large displacement → the offset model breaks →
+penetration is reintroduced in the EVALUATED (visual/rendered) hair.
+
+This reconciles the whole session: my "solver is clean" measurements AND the
+user's "it pokes through" were BOTH right — different things (solver output vs
+evaluated curve). The user inspects the evaluated hair from INSIDE the head.
+
+**This validates the headless server direction:** the 450-frame headless run is
+0-penetration precisely because there is NO modifier round-trip — sim output IS
+the result. The in-Blender static `Simulate` is fundamentally limited by writeback.
+
+### Roots ARE fixed (don't re-chase them)
+v0.1.2 `condition_to_collider` (ROOT_OFFSET=1.0 mm, = Tokoya `_mask_plant.offset_m`)
+puts roots 1.0 mm outside and it SURVIVES to the evaluated curve (measured: point
+0 and 1 = 0% inside, robust ray-parity). The user said roots were 1 mm inside —
+that was pre-v0.1.2 / a stale view. Roots are out now. The remaining penetration
+is mid-strand, caused by writeback (above).
+
+### NEXT (decision was pending when user left for the pool)
+Three options on the table (user to pick):
+1. **Fix the writeback in Blender** — re-measure offset after conditioning, OR
+   bypass the modifier and write the solver output straight to the evaluated
+   curve. First find WHY the shift is 46 mm (conditioning's 29 mm root move
+   breaking the offset model, vs the modifier being inherently lossy). Quick
+   isolating test: run withOUT conditioning and see if writeback still shifts.
+2. **Lean into the headless server** (recommended by evidence) — server bakes,
+   writes Alembic directly; Blender static Simulate is preview-only.
+3. **Investigate the 46 mm shift first**, then decide.
+
+### CAUTION: I left the user's Curves object modified
+This session reset the Curves to `groom_rest` and ran sims on it repeatedly via
+MCP. Tell the user to reload the .blend (or re-groom) before trusting its state.
+
+### Pushed this session: 6841233 (headless collision), 4f4a9cf (v0.1.1),
+3914f7b (v0.1.2 — Tokoya-identical + 1 mm conditioning). dist/yurameki-0.1.2.zip.
+
+---
+
+## Stage 1 server separation (2026-06-22 PM)
 
 **PUBLIC? No — PRIVATE repo** `https://github.com/ysk424/yurameki` (branch
 `master`). Push checkpoints often; PULL to roll back if a direction fails.
