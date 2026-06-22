@@ -1,0 +1,136 @@
+"""Headless hair simulation engine — Blender-independent.
+
+Drives the kinematic hair roots by the head bone's world motion (validated
+rigid-follow model) and runs the Taichi XPBD solver from the yurameki
+extension. No bpy. Collision is optional and OFF in this first milestone
+(body_collision_fn=None); the head-driven gravity/spring sim runs end to end.
+
+Inputs (numpy):
+  groom_rest : (n_total, 3)  rest hair world positions, frame `frame_start`.
+  head_world : (n_frames, 4, 4)  head bone world matrices, frame_start..end.
+  params     : physics dict (seg_ke, damping, mass, gravity, iterations, ...).
+
+Output:
+  positions  : (n_frames, n_total, 3)  simulated world positions per frame.
+"""
+from __future__ import annotations
+import os, sys, json
+import numpy as np
+
+# Import the solver from the extension root (one level up).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+
+def default_params(root: str = _ROOT) -> dict:
+    with open(os.path.join(root, "yurameki_defaults.json"), encoding="utf-8") as f:
+        d = json.load(f)
+    return {
+        "seg_ke": float(d["SPRING_KE"]),
+        "root_bend_ke": float(d["ROOT_BENDING_KE"]),
+        "bend_ke": float(d["BENDING_KE"]),
+        "damping": float(d["DAMPING"]),
+        "mass": float(d["PARTICLE_MASS"]),
+        "gravity": list(d["GRAVITY"]),
+        "iterations": int(d["ITERATIONS"]),
+        "substeps": 1,
+        "bending_enabled": bool(d["BENDING_ENABLED"]),
+        "fps": 24.0,
+        "fps_base": 1.0,
+        "pps": 9,
+        "backend": "CPU",
+    }
+
+
+def _apply(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    h = np.column_stack([pts, np.ones(len(pts))])
+    return (h @ T.T)[:, :3]
+
+
+def simulate(groom_rest, head_world, params, progress=None) -> np.ndarray:
+    from _sim_taichi import get_solver_class
+
+    pps = int(params["pps"])
+    n_total = groom_rest.shape[0]
+    if n_total % pps:
+        raise ValueError(f"{n_total} points not divisible by pps={pps}")
+    n_strands = n_total // pps
+    nframes = head_world.shape[0]
+
+    root_idx = np.arange(n_strands) * pps
+    roots1 = groom_rest[root_idx]
+    point1_1 = groom_rest[root_idx + 1]
+    H1_inv = np.linalg.inv(head_world[0])
+
+    Solver = get_solver_class(params["backend"])
+    solver = Solver(
+        n_total=n_total, n_strands=n_strands, pps=pps,
+        init_pos=groom_rest.astype(np.float32),
+        particle_mass=params["mass"],
+        bending_enabled=params["bending_enabled"],
+    )
+
+    dt = float(params["fps_base"]) / float(params["fps"])
+    gravity = np.asarray(params["gravity"], np.float32)
+
+    curr = groom_rest.astype(np.float32).copy()
+    vel = np.zeros_like(curr)
+    out = np.zeros((nframes, n_total, 3), np.float32)
+    out[0] = curr  # frame_start = rest pose
+
+    for fi in range(1, nframes):
+        T = head_world[fi] @ H1_inv
+        roots_f = _apply(T, roots1).astype(np.float32)
+        point1_f = _apply(T, point1_1).astype(np.float32)
+        solver.set_positions_velocities(curr, vel)
+        curr = solver.run_frame(
+            dt=dt, n_substeps=int(params["substeps"]),
+            n_iter=int(params["iterations"]),
+            gravity=gravity, new_root_world=roots_f,
+            seg_ke=params["seg_ke"], root_bend_ke=params["root_bend_ke"],
+            bend_ke=params["bend_ke"], damping=params["damping"],
+            bending_enabled=params["bending_enabled"],
+            new_point1_world=point1_f, body_collision_fn=None,
+        )
+        vel = solver.get_velocities_numpy()
+        out[fi] = curr
+        if progress and fi % 25 == 0:
+            progress(fi, nframes)
+    return out
+
+
+def run_from_testdata(testdata, out_path, start=None, end=None, overrides=None):
+    """Convenience driver used by the CLI and the server."""
+    groom = np.load(os.path.join(testdata, "groom_rest.npy"))
+    head = np.load(os.path.join(testdata, "head_world.npy"))
+    params = default_params()
+    if overrides:
+        params.update(overrides)
+    f0 = 0 if start is None else int(start)
+    f1 = head.shape[0] if end is None else int(end)
+    head = head[f0:f1]
+    out = simulate(groom, head, params,
+                   progress=lambda i, n: print(f"  frame {i}/{n}", flush=True))
+    np.savez_compressed(out_path, positions=out, frame_start=f0, pps=params["pps"])
+    finite = np.isfinite(out).all()
+    moved = float(np.linalg.norm(out[-1] - out[0], axis=1).max())
+    return {
+        "out": out_path, "shape": list(out.shape),
+        "finite": bool(finite), "max_tip_motion_m": moved,
+    }
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--testdata", default=os.path.join(_ROOT, "testdata"))
+    ap.add_argument("--out", default=os.path.join(_ROOT, "testdata", "hair_sim.npz"))
+    ap.add_argument("--start", type=int, default=None)
+    ap.add_argument("--end", type=int, default=None)
+    args = ap.parse_args()
+    import time
+    t = time.time()
+    r = run_from_testdata(args.testdata, args.out, args.start, args.end)
+    r["seconds"] = round(time.time() - t, 2)
+    print(json.dumps(r, indent=2))
