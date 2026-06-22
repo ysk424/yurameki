@@ -5,7 +5,60 @@ This file is a handoff log for Claude Code sessions.
 
 ---
 
-## ⚠️ START HERE — Yurameki v0.1.0 (2026-06-22)
+## ⚠️ START HERE — Stage 1 server separation (2026-06-22 PM)
+
+**PUBLIC? No — PRIVATE repo** `https://github.com/ysk424/yurameki` (branch
+`master`). Push checkpoints often; PULL to roll back if a direction fails.
+Discipline (user's rule): if you fail the same way a few times on coordinate
+transforms, STOP and rethink — don't thrash (that burns tokens).
+
+### Done this session (all validated, all pushed)
+
+1. **Test data extracted from the live test project** (Blender MCP) →
+   `testdata/`. Scene: armature `HD Neutral F`, body `CC_Base_Body`, hair
+   `Curves` (36000 pts = 4000×9), head bone `CC_Base_Head`, frames 1..450, fps 24.
+   - `collider.abc` — tanabata recipe (`bpy.ops.wm.alembic_export`,
+     selected, RENDER eval, global_scale 1.0). **6 GB, gitignored** (`*.abc`).
+   - `head_world.npy` (450,4,4) ground truth = `arm.matrix_world @ pb.matrix`.
+   - `fk_channels.npy` (450,8,9) **tsudura-equivalent** loc/euler-XYZ/scale,
+     decomposed from `pose_bone.matrix_basis`. `armature_world.npy` is constant.
+   - `fk_meta.json` — chain (root..head), rest matrices, inherit flags.
+   - `groom_rest.npy` (36000,3) frame-1 hair world. `eval_roots_sample.npy`.
+   - No tsudura clip existed; the FK data was extracted by hand.
+
+2. **The math (server/, pure numpy, Blender-independent):**
+   - `fk.py` — FK: `pose[b]=pose[parent]·(rest[parent]⁻¹·rest[b])·basis[b]`,
+     Blender Euler XYZ = `Rz·Ry·Rx`. `validate_fk.py`: reconstructed head world
+     matches ground truth to **4e-7 (0.0004 mm, 1.4e-5°)** over 450 frames.
+   - `validate_root_follow.py` — rigid model `root(f)=head_M(f)·head_M(1)⁻¹·root(1)`:
+     **95% of roots within 0.002 mm**, worst 2.8 mm at the hairline (mixed
+     neck/head weights). Model is valid.
+   - NOTE: a rotation-error metric first showed 120° — that was a METRIC bug
+     (0.01 world scale baked in the matrices), not FK. Caught by reasoning.
+
+3. **Headless engine + server:**
+   - `engine.py` — drives kinematic roots by the head-follow transform, runs the
+     extension's **Taichi (CPU)** solver with `body_collision_fn=None`. Imports
+     `_sim_taichi` (its only bpy use is lazy inside `build_body_bvh`). Full
+     450-frame clip: finite, **8 s on CPU**.
+   - `app.py` — TCP JSON-RPC `127.0.0.1:7780` (ping/simulate/shutdown), tanabata
+     pattern. `cli.py` — client. Tested from **CLI and Blender MCP** (Blender as
+     a thin client). Hair sim runs fully outside Blender.
+
+### Next (not done yet)
+
+- **Collision is OFF.** The CUDA path uses NVIDIA Warp, which is NOT installed in
+  standalone Python (`pip install warp-lang`; verify sm_120 / RTX 5070 Ti). The
+  CPU/Vulkan path's `_sim_taichi.build_body_bvh` needs bpy → must be replaced by
+  a Blender-independent BVH (warp `wp.Mesh`, or read `collider.abc` triangles per
+  frame). To stay non-breaking, add a `triangles=(verts,indices)` path to
+  `_collision_warp.WarpBodyCollider` and make its top-level `import bpy` lazy.
+- Alembic OUTPUT (geometry cache) — deferred; npz for now.
+- Stage 2 = C++ (Taichi AOT) only after the algorithm is frozen. Not now.
+
+---
+
+## Yurameki v0.1.0 (2026-06-22)
 
 ### このプロジェクトは何か
 
