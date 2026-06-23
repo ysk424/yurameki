@@ -86,6 +86,39 @@ class YURAMEKI_OT_simulate(Operator):
         return {"FINISHED"}
 
 
+class YURAMEKI_OT_condition_groom(Operator):
+    bl_idname = "yurameki.condition_groom"
+    bl_label = "Condition Groom"
+    bl_description = (
+        "Move buried / near-surface hair points to Tokoya's 1 mm outside-body "
+        "startup clearance without changing the solver"
+    )
+
+    def execute(self, context):
+        obj = _find_curves_obj()
+        if obj is None:
+            self.report({"ERROR"}, "Need exactly one Curves object"); return {"CANCELLED"}
+        wm = context.window_manager
+        body_name = wm.yurameki_body_obj.strip()
+        body = bpy.data.objects.get(body_name)
+        if body is None or body.type != "MESH":
+            self.report({"ERROR"}, "Select a Body Mesh first"); return {"CANCELLED"}
+        from . import _world_passthrough as _wp
+        eval_w, _orig_w, n_pushed, n_roots = _wp.condition_curve_to_collider(
+            obj, body.name, context.scene, _wp.ROOT_OFFSET, _wp.POINTS_PER_STRAND
+        )
+        if eval_w is None:
+            self.report({"ERROR"}, "Could not read/write Curves positions")
+            return {"CANCELLED"}
+        _clear_recording_cache()
+        self.report(
+            {"INFO"},
+            f"Conditioned {n_pushed} points ({n_roots} root anchors) "
+            f"to {_wp.ROOT_OFFSET * 1000:.2f} mm outside {body.name!r}",
+        )
+        return {"FINISHED"}
+
+
 class YURAMEKI_OT_record(Operator):
     bl_idname = "yurameki.record"
     bl_label = "REC"
@@ -189,6 +222,7 @@ class YURAMEKI_OT_pick_body(Operator):
 
 _classes = (
     YURAMEKI_OT_simulate,
+    YURAMEKI_OT_condition_groom,
     YURAMEKI_OT_record,
     YURAMEKI_OT_bake_range,
     YURAMEKI_OT_use_scene_range,

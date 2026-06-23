@@ -1,4 +1,4 @@
-﻿"""Yurameki -- single-shot physics simulation.
+"""Yurameki -- single-shot physics simulation.
 
 No bake buffer.  No frame_change_post handler.  No mode state.
 The Simulate operator calls run_simulation() directly; it blocks while
@@ -39,47 +39,109 @@ COMPUTE_BACKEND        = 'CUDA'
 COLLISION_MARGIN       = 0.0005
 COLLISION_SEARCH       = 0.003
 POST_COLLISION_ITERATIONS = 4
-# Root/groom startup offset from the body surface — the ONLY addition vs Tokoya.
-# Tokoya plants the hair on a mask surface pushed `_mask_plant.offset_m = 0.001`
-# (1.0 mm) along the normal. Yurameki takes an external groom (no planting), so
-# it can't guarantee that offset; `condition_to_collider` re-establishes it at
-# startup. Everything else (solver, collision, SUBSTEPS=1) stays Tokoya-identical.
 ROOT_OFFSET            = 0.001
 
 
-def condition_to_collider(world_pts, body_name, offset, pps):
-    """Force points inside / within ``offset`` of the collider to sit
-    ``closest + normal*offset`` outside it.
-
-    This is the proven Tokoya precondition (毛根オフセット): a pinned,
-    collision-excluded root initialized inside the body drags its whole strand
-    through. Tokoya guaranteed it at plant time (mask surface 1.0 mm out);
-    Yurameki takes an external groom, so it can't — enforce it at simulation
-    startup instead. ``offset`` is the body-surface clearance (ROOT_OFFSET,
-    1.0 mm), NOT the 0.5 mm collision margin: 0.5 mm is not enough. Returns
-    ``(conditioned_world_pts, n_pushed, n_roots_pushed)``.
-    """
+def _body_bvh(body_name):
     from . import _sim_taichi
+    return _sim_taichi.build_body_bvh(body_name)
+
+
+def condition_to_collider(world_pts, body_name, offset=ROOT_OFFSET, pps=POINTS_PER_STRAND):
+    """Translate whole strands outside the Body collider without changing shape.
+
+    Tokoya guarantees this at plant time by creating the Head Mask 1.0 mm outside
+    the Body surface. Yurameki accepts external grooms, so it must restore the
+    same precondition before the XPBD solver measures rest lengths. Solver and
+    collision kernels are intentionally unchanged.
+
+    Important: do NOT project every point independently. That bends the strand
+    before rest lengths are measured. Instead find the deepest/nearest violation
+    in each strand and apply one translation vector to the whole strand.
+    """
     from mathutils import Vector
-    bvh = _sim_taichi.build_body_bvh(body_name)
+    bvh = _body_bvh(body_name)
     if bvh is None:
         return world_pts, 0, 0
     out = world_pts.copy()
     pushed = 0
     roots_pushed = 0
-    for i in range(len(out)):
-        pv = Vector(out[i].tolist())
-        loc, normal, _, _ = bvh.find_nearest(pv)
-        if loc is None:
-            continue
-        normal = normal.normalized()
-        if (pv - loc).dot(normal) < offset:
-            corrected = loc + normal * offset
-            out[i] = (corrected.x, corrected.y, corrected.z)
-            pushed += 1
-            if i % pps < 2:
-                roots_pushed += 1
+    if len(out) % pps:
+        return out, 0, 0
+    n_strands = len(out) // pps
+    for strand in range(n_strands):
+        base = strand * pps
+        best_delta = None
+        best_amount = 0.0
+        root_anchor_touched = False
+        for k in range(pps):
+            i = base + k
+            pv = Vector(out[i].tolist())
+            loc, normal, _, _ = bvh.find_nearest(pv)
+            if loc is None:
+                continue
+            normal = normal.normalized()
+            signed = (pv - loc).dot(normal)
+            amount = offset - signed
+            if amount > best_amount:
+                best_amount = amount
+                best_delta = np.array(normal * amount, dtype=np.float32)
+            if k < 2 and amount > 0.0:
+                root_anchor_touched = True
+        if best_delta is not None and best_amount > 0.0:
+            out[base:base + pps] += best_delta
+            pushed += pps
+            if root_anchor_touched:
+                roots_pushed += 2
     return out, pushed, roots_pushed
+
+
+def condition_curve_to_collider(obj, body_name, scene=None, offset=ROOT_OFFSET,
+                                pps=POINTS_PER_STRAND, max_passes=3):
+    """Persistently condition a Curves object, then re-read evaluated positions.
+
+    The old one-shot approach only conditioned the solver's private array. The
+    evaluated Curves object still supplied buried roots on the next frame, and
+    `_write_world(..., offset)` used a stale modifier offset. This function writes
+    the conditioned target back to the original curve, updates the depsgraph, then
+    re-measures the evaluated/original relationship before the solver starts.
+    """
+    if obj is None or obj.type != 'CURVES':
+        return None, None, 0, 0
+    attr = obj.data.attributes.get('position')
+    if attr is None or len(attr.data) == 0:
+        return None, None, 0, 0
+    n_total = len(attr.data)
+    total_pushed = 0
+    total_roots = 0
+    scene = scene or bpy.context.scene
+    eval_w = orig_w = None
+    for _ in range(max(1, int(max_passes))):
+        dg = bpy.context.evaluated_depsgraph_get()
+        obj_eval = obj.evaluated_get(dg)
+        eval_w = _read_world(obj_eval.data, n_total, obj_eval.matrix_world)
+        orig_w = _read_world(obj.data, n_total, obj.matrix_world)
+        if eval_w is None or orig_w is None:
+            return None, None, total_pushed, total_roots
+        conditioned, pushed, roots = condition_to_collider(
+            eval_w, body_name, offset, pps
+        )
+        total_pushed += pushed
+        total_roots += roots
+        if pushed == 0:
+            break
+        _write_world(obj, conditioned, offset=eval_w - orig_w)
+        if scene is not None:
+            try:
+                bpy.context.view_layer.update()
+            except Exception:
+                pass
+    dg = bpy.context.evaluated_depsgraph_get()
+    obj_eval = obj.evaluated_get(dg)
+    eval_w = _read_world(obj_eval.data, n_total, obj_eval.matrix_world)
+    orig_w = _read_world(obj.data, n_total, obj.matrix_world)
+    return eval_w, orig_w, total_pushed, total_roots
+
 
 
 def _read_world(data_owner, n_total: int, matrix_world) -> 'np.ndarray | None':
@@ -128,26 +190,18 @@ def run_simulation(curves_obj_name: str, n_steps: int,
     root_indices = np.arange(n_strands, dtype=np.int32) * POINTS_PER_STRAND
     dt = float(scene.render.fps_base) / float(scene.render.fps)
 
-    dg       = bpy.context.evaluated_depsgraph_get()
-    obj_eval = obj.evaluated_get(dg)
-    eval_w   = _read_world(obj_eval.data, n_total, obj_eval.matrix_world)
-    orig_w   = _read_world(obj.data,      n_total, obj.matrix_world)
+    eval_w, orig_w, n_pushed, n_roots = condition_curve_to_collider(
+        obj, BODY_COLLISION_TARGET, scene, ROOT_OFFSET, POINTS_PER_STRAND
+    )
     if eval_w is None or orig_w is None:
         return 'ERROR: could not read world positions'
+    if n_pushed:
+        print(f'[yurameki/sim] conditioned {n_pushed} points '
+              f'({n_roots} root anchors) to {ROOT_OFFSET * 1000:.2f} mm '
+              f'outside {BODY_COLLISION_TARGET!r}')
     offset_w = eval_w - orig_w
 
     curr_world = eval_w.copy()
-
-    # Startup root check: force buried / near-surface points outside the
-    # collider before building the solver, so rest lengths and the pinned
-    # roots start from a penetration-free state (proven Tokoya precondition).
-    curr_world, n_pushed, n_roots = condition_to_collider(
-        curr_world, BODY_COLLISION_TARGET, ROOT_OFFSET, POINTS_PER_STRAND
-    )
-    if n_pushed:
-        print(f'[yurameki/sim] conditioned {n_pushed} points '
-              f'({n_roots} roots) to {ROOT_OFFSET * 1000:.2f} mm '
-              f'outside {BODY_COLLISION_TARGET!r}')
 
     curr_vel   = np.zeros_like(curr_world)
 

@@ -128,14 +128,22 @@ class RecordingManager:
             )
 
         frame = int(scene.frame_current)
-        dg = bpy.context.evaluated_depsgraph_get()
-        obj_eval = obj.evaluated_get(dg)
-        eval_world = _wp._read_world(obj_eval.data, n_total, obj_eval.matrix_world)
+        eval_world, orig_world, n_pushed, n_roots = _wp.condition_curve_to_collider(
+            obj, body_name, scene, _wp.ROOT_OFFSET, POINTS_PER_STRAND
+        )
         if eval_world is None:
             return False, "Could not read evaluated Curves positions"
+        if n_pushed:
+            print(
+                f"[yurameki/record] conditioned {n_pushed} points "
+                f"({n_roots} root anchors) to {_wp.ROOT_OFFSET * 1000:.2f} mm "
+                f"outside {body_name!r}"
+            )
 
         cached = self.frames.get(frame)
         if (
+            n_pushed == 0
+            and
             cached is not None
             and cached[0].shape == (n_total, 3)
             and self.obj_name == obj.name
@@ -145,18 +153,6 @@ class RecordingManager:
         else:
             positions = eval_world.copy()
             velocities = np.zeros_like(positions)
-            # Startup root check (proven Tokoya 毛根0.5mm offset): force buried
-            # roots / near-surface points outside the collider before the solver
-            # measures rest lengths.
-            positions, n_pushed, n_roots = _wp.condition_to_collider(
-                positions, body_name, _wp.ROOT_OFFSET, POINTS_PER_STRAND
-            )
-            if n_pushed:
-                print(
-                    f"[yurameki/record] conditioned {n_pushed} points "
-                    f"({n_roots} roots) to {_wp.ROOT_OFFSET * 1000:.2f} mm "
-                    f"outside {body_name!r}"
-                )
 
         # Re-recording replaces this frame and everything after it.
         for old_frame in [key for key in self.frames if key >= frame]:

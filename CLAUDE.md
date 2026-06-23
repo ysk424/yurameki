@@ -50,6 +50,39 @@ Three options on the table (user to pick):
    writes Alembic directly; Blender static Simulate is preview-only.
 3. **Investigate the 46 mm shift first**, then decide.
 
+### 2026-06-23 follow-up fix applied in working tree
+
+Do not remove `ROOT_OFFSET` / `condition_to_collider` again. Tokoya's solver
+expects point 0 and point 1 to start outside the body because Tokoya planted hair
+on a Head Mask shell 1.0 mm outside the Body. Yurameki accepts external grooms,
+so it must recreate that precondition before the solver measures rest lengths.
+
+The fix is deliberately outside the solver/collision kernels:
+- `_world_passthrough.condition_curve_to_collider(...)` writes the conditioned
+  target back to the original Curves datablock, updates the depsgraph, then
+  re-reads evaluated/original positions before simulation.
+- `run_simulation`, REC start, and Bake start all use that same persistent
+  conditioning path.
+- `yurameki.condition_groom` exposes the conditioning as a manual UI button.
+
+Blender MCP test on `YOKO_YURAMEKI_TEST.blend`, restored after test:
+root anchors before conditioning: 4155 inside, 4245 <0.5 mm, min -25.3 mm.
+after conditioning: 0 inside, 0 <0.5 mm, min ≈0.992 mm. The small shortfall from
+1.000 mm is Surface Deform re-evaluation drift, not collision failure.
+
+User visual-tested the v0.1.3 ZIP and marked the first target **PASS**. The
+conditioning implementation was adjusted from per-point projection to whole-strand
+translation: find the deepest/nearest violation per strand, then translate all 9
+points by the same vector. This preserves segment rest lengths and root direction,
+closer to Tokoya's "planted on a 1 mm outside shell" condition.
+
+Known next improvement: after a few simulation steps, free points can still be
+pulled visually/evaluated back near or into the body even though root anchors stay
+outside. CPU BVH collision fires, so the remaining issue is likely the
+`_write_world` → Deform Curves on Surface round-trip / evaluated writeback path,
+not the core solver. Do not change solver/collision kernels until that writeback
+measurement is isolated.
+
 ### CAUTION: I left the user's Curves object modified
 This session reset the Curves to `groom_rest` and ran sims on it repeatedly via
 MCP. Tell the user to reload the .blend (or re-groom) before trusting its state.
