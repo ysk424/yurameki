@@ -151,6 +151,19 @@ def get_solver_class(backend: str = "CUDA"):
         # ------------------------------------------------------------------ #
 
         @ti.kernel
+        def _advect_by_root_motion(self, tip_weight: ti.f32):
+            for s in range(self.n_strands):
+                base = s * self.pps
+                root_delta = self.roots[s] - self.pos[base]
+                denom = ti.cast(self.pps - 3, ti.f32)
+                for k in range(2, self.pps):
+                    t = 0.0
+                    if denom > 0.0:
+                        t = ti.cast(self.pps - 1 - k, ti.f32) / denom
+                    weight = tip_weight + (1.0 - tip_weight) * t
+                    self.pos[base + k] += root_delta * weight
+
+        @ti.kernel
         def _predict(
             self, dt: ti.f32,
             gravity_x: ti.f32, gravity_y: ti.f32, gravity_z: ti.f32,
@@ -285,6 +298,7 @@ def get_solver_class(backend: str = "CUDA"):
             new_point1_world = None,         # (n_strands, 3), optional
             body_collision_fn = None,       # callable(pred_np) → None, or None
             post_collision_iterations: int = 4,
+            root_advection_tip_weight: float = 1.0,
         ) -> np.ndarray:
             """Run one Blender frame → return final (n_total, 3) positions.
 
@@ -307,6 +321,9 @@ def get_solver_class(backend: str = "CUDA"):
             for _ in range(n_substeps):
                 self.roots.from_numpy(roots_np)
                 self.point1s.from_numpy(point1_np)
+                self._advect_by_root_motion(
+                    float(root_advection_tip_weight)
+                )
                 self._predict(
                     dt_sub,
                     float(gravity_np[0]),

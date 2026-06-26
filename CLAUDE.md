@@ -7,6 +7,58 @@ This file is a handoff log for Claude Code sessions.
 
 ## ⚠️ START HERE — Real cause of "hair pokes through head" FOUND (2026-06-23 PM)
 
+### 2026-06-26 experiment: tail-preserving collision pushout FAILED
+
+Tested a proposed fix for the frame 116-117 explosion near `Empty`: instead of
+letting point/segment collision snap individual downstream points to the Body
+surface, move the colliding point's tail by one shared translation vector so
+segment rest lengths are preserved better.
+
+Result: **reject this simple tail-translation approach.** In a copy-only Blender
+MCP test seeded from frame 115 cached positions/velocities and simulated through
+frame 118, `strand 1506` still exploded and got worse:
+- old max per-frame motion 115->116->117->118: `9.1mm, 326.0mm, 81.6mm`
+- tail-translation test: `9.1mm, 382.3mm, 9.1mm`
+
+It also introduced new explosions in strands that were previously quiet:
+`strand 2792` jumped to `473mm` while its old max motion was only `9mm`;
+`4398` jumped to `330mm` while its old max was `9mm`.
+
+Interpretation: preserving tail lengths after contact is not enough. The shared
+translation can move a whole tail into a bad configuration and transfer the
+collision impulse to other strands/frames. Do not keep the naive implementation.
+If revisiting this direction, it needs a more constrained contact solve, not a
+single immediate tail translation in point/segment collision.
+
+### 2026-06-26 experiment: root-motion advection is promising
+
+New understanding after the failed tail-pushout test: the problem is not only
+that strand lengths collapse during collision. The deeper issue is that the head
+and Body move into hair that is still lagging in the previous pose, then collision
+has to apply a huge corrective displacement.
+
+Implemented and tested a simple pre-collision advection step in the solver:
+before prediction each substep, add the current root movement to free points
+`point2..point8`. This makes the whole strand follow the head translation before
+collision, then XPBD/velocity still handle the residual motion.
+
+Copy-only Blender MCP validation, seeded from cached frame 115 positions and
+velocities and simulated through frame 118 with the same 50 interpolation steps:
+- `strand 1506`: old max motion `326.0mm` at 116->117, new `11.5mm`.
+- `strand 3364`: old `261.9mm`, new `11.4mm`.
+- global max over 6000 strands in frames 115..118: old `462.3mm`, new `109.7mm`.
+- worsened strands by >10mm: 4 / 6000 in this local range.
+
+Weight sweep for distal advection:
+- tip weight 0.0: global max `122.1mm`, 20 worsened >10mm.
+- 0.35: global max `126.7mm`, 12 worsened >10mm.
+- 0.5: global max `116.0mm`, 8 worsened >10mm.
+- 1.0: global max `109.7mm`, 4 worsened >10mm.
+
+Current implementation defaults to `root_advection_tip_weight=1.0`: translate
+all free points by the root delta before prediction. This is intentionally a
+pre-collision frame-motion compensation, not a collision pushout.
+
 **The penetration is NOT roots, NOT collision, NOT substeps. It is the WRITEBACK
 through the `Surface Deform` (Deform Curves on Surface) geometry-nodes modifier.**
 

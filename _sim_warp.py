@@ -6,6 +6,29 @@ import warp as wp
 
 
 @wp.kernel
+def _advect_by_root_motion(
+    pos: wp.array(dtype=wp.vec3),
+    roots: wp.array(dtype=wp.vec3),
+    points_per_strand: int,
+    tip_weight: float,
+):
+    strand = wp.tid()
+    base = strand * points_per_strand
+    root_delta = roots[strand] - pos[base]
+    denom = float(points_per_strand - 3)
+    point = int(2)
+    while point < points_per_strand:
+        if denom > 0.0:
+            t = float(points_per_strand - 1 - point) / denom
+        else:
+            t = 0.0
+        weight = tip_weight + (1.0 - tip_weight) * t
+        i = base + point
+        pos[i] = pos[i] + root_delta * weight
+        point += 1
+
+
+@wp.kernel
 def _predict(
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -255,6 +278,7 @@ class WarpXPBDSolver:
         new_point1_world=None,
         body_collision_fn=None,
         post_collision_iterations=4,
+        root_advection_tip_weight=1.0,
     ):
         dt_sub = float(dt) / float(n_substeps)
         gravity_np = np.asarray(gravity, dtype=np.float32).reshape(3)
@@ -269,6 +293,17 @@ class WarpXPBDSolver:
         self.point1s.assign(point1_np)
 
         for _ in range(n_substeps):
+            wp.launch(
+                _advect_by_root_motion,
+                dim=self.n_strands,
+                inputs=[
+                    self.pos,
+                    self.roots,
+                    self.pps,
+                    float(root_advection_tip_weight),
+                ],
+                device=self.device,
+            )
             wp.launch(
                 _predict,
                 dim=self.n_total,
