@@ -8,5 +8,8 @@
     "BENDING_ENABLED":       false,
     "ROOT_BENDING_KE":       2000.0,
     "BENDING_KE":            10.0,
+    "ANGLE_LIMIT_ENABLED":    true,
+    "ANGLE_LIMIT_RAD":        1.0,
+    "ANGLE_LIMIT_KE":         1000000.0,
     "BODY_COLLISION_TARGET": "CC_Base_Body"
 }

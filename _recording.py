@@ -483,6 +483,9 @@ class RecordingManager:
                 bending_enabled=_wp.BENDING_ENABLED,
                 body_collision_fn=collision,
                 post_collision_iterations=_wp.POST_COLLISION_ITERATIONS,
+                angle_limit_enabled=_wp.ANGLE_LIMIT_ENABLED,
+                angle_limit_rad=_wp.ANGLE_LIMIT_RAD,
+                angle_limit_ke=_wp.ANGLE_LIMIT_KE,
             )
             if not keeps_state_on_device:
                 self.velocities = self.solver.get_velocities_numpy()

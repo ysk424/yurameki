@@ -299,6 +299,9 @@ def get_solver_class(backend: str = "CUDA"):
             body_collision_fn = None,       # callable(pred_np) → None, or None
             post_collision_iterations: int = 4,
             root_advection_tip_weight: float = 1.0,
+            angle_limit_enabled: bool = False,
+            angle_limit_rad: float = 1.0,
+            angle_limit_ke: float = 1.0e6,
         ) -> np.ndarray:
             """Run one Blender frame → return final (n_total, 3) positions.
 

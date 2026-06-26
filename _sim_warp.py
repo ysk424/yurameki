@@ -117,6 +117,50 @@ def _solve_springs(
 
 
 @wp.kernel
+def _solve_angle_limits(
+    predicted: wp.array(dtype=wp.vec3),
+    inverse_mass: wp.array(dtype=float),
+    angle_chord_min: wp.array(dtype=float),
+    angle_chord_max: wp.array(dtype=float),
+    points_per_strand: int,
+    dt: float,
+    stiffness: float,
+    enabled: int,
+):
+    if enabled != 1:
+        return
+
+    strand = wp.tid()
+    base = strand * points_per_strand
+    angle_base = strand * (points_per_strand - 2)
+    alpha = 1.0 / (stiffness * dt * dt)
+
+    for k in range(points_per_strand - 2):
+        i = base + k
+        j = i + 2
+        wi = inverse_mass[i]
+        wj = inverse_mass[j]
+        if wi + wj > 1.0e-10:
+            delta = predicted[i] - predicted[j]
+            distance = wp.length(delta)
+            if distance > 1.0e-8:
+                lower = angle_chord_min[angle_base + k]
+                upper = angle_chord_max[angle_base + k]
+                target = distance
+                if distance < lower:
+                    target = lower
+                elif distance > upper:
+                    target = upper
+
+                constraint = distance - target
+                if wp.abs(constraint) > 1.0e-8:
+                    delta_lambda = -constraint / (wi + wj + alpha)
+                    gradient = delta / distance
+                    predicted[i] = predicted[i] + wi * delta_lambda * gradient
+                    predicted[j] = predicted[j] - wj * delta_lambda * gradient
+
+
+@wp.kernel
 def _derive_velocity(
     pos: wp.array(dtype=wp.vec3),
     predicted: wp.array(dtype=wp.vec3),
@@ -164,6 +208,7 @@ class WarpXPBDSolver:
         self.pps = int(pps)
 
         positions = np.ascontiguousarray(init_pos, dtype=np.float32)
+        self.rest_positions = positions.copy()
         roots = np.arange(n_strands, dtype=np.int32) * pps
         inverse_mass = np.full(n_total, 1.0 / particle_mass, dtype=np.float32)
         inverse_mass[roots] = 0.0
@@ -182,6 +227,12 @@ class WarpXPBDSolver:
         bending_rest = np.ones(
             (n_strands, max(pps - 2, 1)), dtype=np.float32
         )
+        angle_chord_min = np.zeros(
+            (n_strands, max(pps - 2, 1)), dtype=np.float32
+        )
+        angle_chord_max = np.zeros(
+            (n_strands, max(pps - 2, 1)), dtype=np.float32
+        )
         if bending_enabled and pps >= 3:
             for strand in range(n_strands):
                 base = strand * pps
@@ -191,6 +242,29 @@ class WarpXPBDSolver:
                 bending_rest[strand, : pps - 2] = np.maximum(
                     np.linalg.norm(delta, axis=1), 1.0e-6
                 )
+        if pps >= 3:
+            for strand in range(n_strands):
+                base = strand * pps
+                for k in range(pps - 2):
+                    p0 = positions[base + k]
+                    p1 = positions[base + k + 1]
+                    p2 = positions[base + k + 2]
+                    a = max(float(np.linalg.norm(p0 - p1)), 1.0e-6)
+                    b = max(float(np.linalg.norm(p2 - p1)), 1.0e-6)
+                    c = float(np.linalg.norm(p0 - p2))
+                    cos_theta = (a * a + b * b - c * c) / (2.0 * a * b)
+                    cos_theta = float(np.clip(cos_theta, -1.0, 1.0))
+                    rest_angle = float(np.arccos(cos_theta))
+                    min_angle = max(0.0, rest_angle - 1.0)
+                    max_angle = min(float(np.pi), rest_angle + 1.0)
+                    chord_min = np.sqrt(
+                        max(a * a + b * b - 2.0 * a * b * np.cos(min_angle), 0.0)
+                    )
+                    chord_max = np.sqrt(
+                        max(a * a + b * b - 2.0 * a * b * np.cos(max_angle), 0.0)
+                    )
+                    angle_chord_min[strand, k] = max(float(chord_min), 1.0e-6)
+                    angle_chord_max[strand, k] = max(float(chord_max), 1.0e-6)
 
         self.pos = wp.array(positions, dtype=wp.vec3, device=self.device)
         self.vel = wp.zeros(n_total, dtype=wp.vec3, device=self.device)
@@ -206,6 +280,13 @@ class WarpXPBDSolver:
         self.bending_rest = wp.array(
             bending_rest.ravel(), dtype=float, device=self.device
         )
+        self.angle_chord_min = wp.array(
+            angle_chord_min.ravel(), dtype=float, device=self.device
+        )
+        self.angle_chord_max = wp.array(
+            angle_chord_max.ravel(), dtype=float, device=self.device
+        )
+        self._angle_limit_rad = 1.0
         self.roots = wp.empty(
             n_strands, dtype=wp.vec3, device=self.device
         )
@@ -279,7 +360,11 @@ class WarpXPBDSolver:
         body_collision_fn=None,
         post_collision_iterations=4,
         root_advection_tip_weight=1.0,
+        angle_limit_enabled=False,
+        angle_limit_rad=1.0,
+        angle_limit_ke=1.0e6,
     ):
+        self._set_angle_limit(float(angle_limit_rad))
         dt_sub = float(dt) / float(n_substeps)
         gravity_np = np.asarray(gravity, dtype=np.float32).reshape(3)
         roots_np = np.ascontiguousarray(new_root_world, dtype=np.float32)
@@ -328,6 +413,8 @@ class WarpXPBDSolver:
                     root_bend_ke,
                     bend_ke,
                     bending_enabled,
+                    angle_limit_enabled,
+                    angle_limit_ke,
                 )
 
             if body_collision_fn is None:
@@ -366,6 +453,8 @@ class WarpXPBDSolver:
                         root_bend_ke,
                         bend_ke,
                         bending_enabled,
+                        angle_limit_enabled,
+                        angle_limit_ke,
                     )
                     self._collide(body_collision_fn, allow_sweep=False)
                 self._collide(
@@ -391,6 +480,8 @@ class WarpXPBDSolver:
         root_bend_ke,
         bend_ke,
         bending_enabled,
+        angle_limit_enabled=False,
+        angle_limit_ke=1.0e6,
     ):
         wp.launch(
             _solve_springs,
@@ -409,3 +500,57 @@ class WarpXPBDSolver:
             ],
             device=self.device,
         )
+        wp.launch(
+            _solve_angle_limits,
+            dim=self.n_strands,
+            inputs=[
+                self.predicted,
+                self.inverse_mass,
+                self.angle_chord_min,
+                self.angle_chord_max,
+                self.pps,
+                float(dt),
+                float(angle_limit_ke),
+                int(bool(angle_limit_enabled)),
+            ],
+            device=self.device,
+        )
+
+    def _set_angle_limit(self, limit_rad: float):
+        limit = max(float(limit_rad), 0.0)
+        if getattr(self, "_angle_limit_rad", None) == limit:
+            return
+        positions = self.rest_positions
+        pps = self.pps
+        angle_chord_min = np.zeros(
+            (self.n_strands, max(pps - 2, 1)), dtype=np.float32
+        )
+        angle_chord_max = np.zeros(
+            (self.n_strands, max(pps - 2, 1)), dtype=np.float32
+        )
+        if pps >= 3:
+            for strand in range(self.n_strands):
+                base = strand * pps
+                for k in range(pps - 2):
+                    p0 = positions[base + k]
+                    p1 = positions[base + k + 1]
+                    p2 = positions[base + k + 2]
+                    a = max(float(np.linalg.norm(p0 - p1)), 1.0e-6)
+                    b = max(float(np.linalg.norm(p2 - p1)), 1.0e-6)
+                    c = float(np.linalg.norm(p0 - p2))
+                    cos_theta = (a * a + b * b - c * c) / (2.0 * a * b)
+                    cos_theta = float(np.clip(cos_theta, -1.0, 1.0))
+                    rest_angle = float(np.arccos(cos_theta))
+                    min_angle = max(0.0, rest_angle - limit)
+                    max_angle = min(float(np.pi), rest_angle + limit)
+                    chord_min = np.sqrt(
+                        max(a * a + b * b - 2.0 * a * b * np.cos(min_angle), 0.0)
+                    )
+                    chord_max = np.sqrt(
+                        max(a * a + b * b - 2.0 * a * b * np.cos(max_angle), 0.0)
+                    )
+                    angle_chord_min[strand, k] = max(float(chord_min), 1.0e-6)
+                    angle_chord_max[strand, k] = max(float(chord_max), 1.0e-6)
+        self.angle_chord_min.assign(angle_chord_min.ravel())
+        self.angle_chord_max.assign(angle_chord_max.ravel())
+        self._angle_limit_rad = limit

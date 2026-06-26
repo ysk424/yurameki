@@ -36,6 +36,9 @@ def default_params(root: str = _ROOT) -> dict:
         "iterations": int(d["ITERATIONS"]),
         "substeps": 1,
         "bending_enabled": bool(d["BENDING_ENABLED"]),
+        "angle_limit_enabled": bool(d.get("ANGLE_LIMIT_ENABLED", True)),
+        "angle_limit_rad": float(d.get("ANGLE_LIMIT_RAD", 1.0)),
+        "angle_limit_ke": float(d.get("ANGLE_LIMIT_KE", 1.0e6)),
         "fps": 24.0,
         "fps_base": 1.0,
         "pps": 9,
@@ -114,6 +117,9 @@ def simulate(groom_rest, head_world, params, progress=None,
             bending_enabled=params["bending_enabled"],
             new_point1_world=point1_f, body_collision_fn=body_fn,
             post_collision_iterations=post_iters,
+            angle_limit_enabled=params.get("angle_limit_enabled", True),
+            angle_limit_rad=params.get("angle_limit_rad", 1.0),
+            angle_limit_ke=params.get("angle_limit_ke", 1.0e6),
         )
         vel = solver.get_velocities_numpy()
         out[fi] = curr

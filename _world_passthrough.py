@@ -34,6 +34,9 @@ SUBSTEPS               = 1
 BENDING_ENABLED        = True
 ROOT_BENDING_KE        = 2000.0
 BENDING_KE             = 10.0
+ANGLE_LIMIT_ENABLED    = True
+ANGLE_LIMIT_RAD        = 1.0
+ANGLE_LIMIT_KE         = 1.0e6
 BODY_COLLISION_TARGET  = 'CC_Base_Body'
 COMPUTE_BACKEND        = 'CUDA'
 COLLISION_MARGIN       = 0.0005
@@ -411,6 +414,9 @@ def run_simulation(curves_obj_name: str, n_steps: int,
             bending_enabled   = BENDING_ENABLED,
             body_collision_fn = collision_fn,
             post_collision_iterations = POST_COLLISION_ITERATIONS,
+            angle_limit_enabled = ANGLE_LIMIT_ENABLED,
+            angle_limit_rad     = ANGLE_LIMIT_RAD,
+            angle_limit_ke      = ANGLE_LIMIT_KE,
         )
         curr_vel   = solver.get_velocities_numpy()
         curr_world = sim_out

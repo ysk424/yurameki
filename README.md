@@ -16,6 +16,7 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - タイムライン録画（`REC`）と圧縮キャッシュ再生
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.1.5: Warp CUDA 経路に rest pose からの角度LIMITを追加しました。
 - v0.1.4: 頭部の急な移動で Body が毛へ入り込むケースを抑えるため、
   自由点を毛根移動へ事前追従させます。
 
@@ -41,6 +42,19 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 
 v0.1.0 では Export 欄とボタンを用意するのみで、実処理は実装していません。
 ベイク計算は別途 C++ サーバーへ移行する予定で、書き出しはそちら側で扱います。
+
+## Angle limit
+
+v0.1.5 adds an experimental Warp CUDA angle limit. For each strand triplet
+`p0, p1, p2`, Yurameki compares the current internal vector angle against the
+rest-pose angle captured when the solver is built. The default global limit is
+`1.0` radian, configured by `ANGLE_LIMIT_RAD` in `yurameki_defaults.json` or
+`_world_passthrough.py`.
+
+The implementation constrains the equivalent `p0-p2` chord range on the GPU
+after the existing segment and bending springs. It is intentionally a single
+global value for now, so the effect of the angle limit can be evaluated before
+adding UI controls or per-point/texture-style maps.
 
 ## ライセンス
 
