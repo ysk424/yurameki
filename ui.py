@@ -44,6 +44,10 @@ class YURAMEKI_PT_main(Panel):
         col = box.column(align=True)
         col.prop(wm, "yurameki_simulation_steps")
         col.operator("yurameki.simulate", icon="PLAY")
+        row = col.row(align=True)
+        row.operator("yurameki.comb_1", text="Comb 1", icon="BRUSH_DATA")
+        row.operator("yurameki.comb_2", text="Comb 2", icon="BRUSH_DATA")
+        row.operator("yurameki.comb_3", text="Comb 3", icon="BRUSH_DATA")
 
         # Range bake + export
         box = layout.box()

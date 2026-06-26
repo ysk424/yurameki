@@ -16,6 +16,7 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - タイムライン録画（`REC`）と圧縮キャッシュ再生
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.1.6: ベイク済みの現在フレームに対する Comb 1 / Comb 2 修復ボタンを追加しました。
 - v0.1.5: Warp CUDA 経路に rest pose からの角度LIMITを追加しました。
 - v0.1.4: 頭部の急な移動で Body が毛へ入り込むケースを抑えるため、
   自由点を毛根移動へ事前追従させます。
@@ -55,6 +56,65 @@ The implementation constrains the equivalent `p0-p2` chord range on the GPU
 after the existing segment and bending springs. It is intentionally a single
 global value for now, so the effect of the angle limit can be evaluated before
 adding UI controls or per-point/texture-style maps.
+
+## Comb repair notes
+
+Comb 1 is the planned local-neighbour repair comb. For every strand, build a
+stable neighbour list from `surface_uv_coordinate` using the nearest 16 strand
+roots in UV space. The separation score is:
+
+```text
+score(strand) =
+  max over points p1..p5 [
+    median distance from this strand point to the same point index on
+    the 16 UV-neighbour strands
+  ]
+```
+
+The default repair threshold should be `20 mm`. In the current test scene this
+keeps the normal root-zone spread near the median range while selecting the
+clear outliers: at frame 125, the Python/Numpy prototype selected 414 of 6000
+strands (6.9%) with `score > 20 mm`. The same prototype took about 0.46 seconds
+including evaluated-curve readback and neighbour-list construction; with the UV
+neighbour list cached, the score calculation itself was about 0.02 seconds.
+
+The repair target should be built only from valid neighbours whose own score is
+at or below the threshold. Detection uses the root-zone points `p1..p5`, but the
+actual comb repair must rebuild the full strand shape through the tip. Copy the
+valid neighbours' root-relative curves for `p1..p8` back onto the broken strand
+root, preferably as an inverse-distance weighted blend of the nearest 2-4 valid
+neighbours. Keep the broken strand root fixed and blend the result by a user
+strength value.
+
+Comb 2 is the planned tail-bend repair comb. A strand is selected when at least
+one tail bend angle at `p5`, `p6`, or `p7` is `>= 0.5` radians, where a bend
+angle is:
+
+```text
+angle(pJ) = acos(dot(normalize(pJ - pJ-1), normalize(pJ+1 - pJ)))
+```
+
+Straight continuation is `0` radians. The default threshold is `0.5` radians
+(about 28.65 degrees). Once selected, the repair is the same root-preserving
+neighbour interpolation used by Comb 1: find valid nearby UV-neighbour strands,
+blend the nearest 2-4 valid root-relative curves, and rebuild `p1..p8` through
+the tip while keeping `p0` fixed. In the current frame-123 MCP test, Comb 2
+selected 151 strands, repaired all 151, and reduced the selected tail-bend
+maximum below `0.5` radians.
+
+Comb repairs must verify the evaluated Curves result after writing. A single
+write to the original Curves datablock may not survive the Deform Curves on
+Surface / Surface Deform round-trip for large shape changes. The practical
+writeback path is iterative: write the desired evaluated world curve using the
+current evaluated-original offset, update the depsgraph, re-read the evaluated
+curve, then repeat until the measured tail-bend/error threshold is satisfied.
+In the frame-123 Comb-2 test, one-shot writeback left visible failures, while
+iterative writeback reached zero `p5..p7 >= 0.5 rad` strands after 7 iterations.
+
+The Empty is only an expensive interactive label, not the final detection
+method. It can still be used as a root-finder/debug probe: given an Empty or
+picked world-space point near a suspicious hair point, report the owning strand
+number, point index, root position, and tip position.
 
 ## ライセンス
 

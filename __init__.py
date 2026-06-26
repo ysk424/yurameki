@@ -119,6 +119,48 @@ class YURAMEKI_OT_condition_groom(Operator):
         return {"FINISHED"}
 
 
+class YURAMEKI_OT_comb_1(Operator):
+    bl_idname = "yurameki.comb_1"
+    bl_label = "Comb 1"
+    bl_description = "Reserved button for Comb 1 local-neighbour repair"
+
+    def execute(self, context):
+        from . import _comb
+        result = _comb.comb_1_current_frame()
+        if not result.ok:
+            self.report({"ERROR"}, result.message)
+            return {"CANCELLED"}
+        self.report({"INFO"}, result.message)
+        return {"FINISHED"}
+
+
+class YURAMEKI_OT_comb_2(Operator):
+    bl_idname = "yurameki.comb_2"
+    bl_label = "Comb 2"
+    bl_description = "Reserved button for Comb 2 tail-bend repair"
+
+    def execute(self, context):
+        from . import _comb
+        result = _comb.comb_2_current_frame()
+        if not result.ok:
+            self.report({"ERROR"}, result.message)
+            return {"CANCELLED"}
+        self.report({"INFO"}, result.message)
+        return {"FINISHED"}
+
+
+class YURAMEKI_OT_comb_3(Operator):
+    bl_idname = "yurameki.comb_3"
+    bl_label = "Comb 3"
+    bl_description = "Reserved button for Comb 3"
+
+    def execute(self, context):
+        from . import _comb
+        result = _comb.comb_3_current_frame()
+        self.report({"WARNING"}, result.message)
+        return {"FINISHED"}
+
+
 class YURAMEKI_OT_record(Operator):
     bl_idname = "yurameki.record"
     bl_label = "REC"
@@ -223,6 +265,9 @@ class YURAMEKI_OT_pick_body(Operator):
 _classes = (
     YURAMEKI_OT_simulate,
     YURAMEKI_OT_condition_groom,
+    YURAMEKI_OT_comb_1,
+    YURAMEKI_OT_comb_2,
+    YURAMEKI_OT_comb_3,
     YURAMEKI_OT_record,
     YURAMEKI_OT_bake_range,
     YURAMEKI_OT_use_scene_range,

@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.1.5"
+version = "0.1.6"
 name = "Yurameki"
 tagline = "Yurameki (揺らめき) — Taichi XPBD hair simulation and bake"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
@@ -21,6 +21,7 @@ paths = [
     "ui.py",
     "_world_passthrough.py",
     "_recording.py",
+    "_comb.py",
     "_collision_warp.py",
     "_sim_warp.py",
     "_sim_taichi.py",
