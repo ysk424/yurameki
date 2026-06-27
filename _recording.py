@@ -88,6 +88,7 @@ class RecordingManager:
         self.positions: np.ndarray | None = None
         self.velocities: np.ndarray | None = None
         self.solver = None
+        self.collision = None
         self.root_indices: np.ndarray | None = None
         self.root_mask: np.ndarray | None = None
         self.previous_roots: np.ndarray | None = None
@@ -197,6 +198,30 @@ class RecordingManager:
         except Exception as exc:
             return False, f"Physics solver build failed: {exc!r}"
 
+        collision = None
+        if backend == "CUDA":
+            try:
+                from ._collision_warp import WarpBodyCollider
+                collision = WarpBodyCollider(
+                    collider_names=_wp.collision_target_names(),
+                    n_total=n_total,
+                    points_per_strand=POINTS_PER_STRAND,
+                    margin=_wp.COLLISION_MARGIN,
+                    search_distance=_wp.COLLISION_SEARCH,
+                )
+                print("[yurameki/record] Warp CUDA collision cache enabled")
+            except Exception as exc:
+                if _wp.CLOTH_COLLISION_TARGET.strip():
+                    return (
+                        False,
+                        "Warp collision unavailable with Cloth Collider: "
+                        f"{exc!r}",
+                    )
+                print(
+                    "[yurameki/record] Warp collision unavailable; "
+                    f"using Python BVH: {exc!r}"
+                )
+
         root_mask = np.zeros(n_total, dtype=bool)
         root_mask[roots] = True
         root_mask[roots + 1] = True
@@ -207,6 +232,7 @@ class RecordingManager:
         self.positions = positions
         self.velocities = velocities
         self.solver = solver
+        self.collision = collision
         self.root_indices = roots
         self.root_mask = root_mask
         self.previous_roots = eval_world[roots].copy()
@@ -236,6 +262,7 @@ class RecordingManager:
         self.previous_sync_mode = None
         self._set_mode("PLAYBACK")
         self.solver = None
+        self.collision = None
         self.last_frame = None
         self.positions = None
         self.velocities = None
@@ -444,25 +471,19 @@ class RecordingManager:
             offset_world = eval_world - orig_world
             roots = eval_world[self.root_indices]
             point1s = eval_world[self.root_indices + 1]
-            if wm.yurameki_compute_backend == "CUDA":
+            if wm.yurameki_compute_backend == "CUDA" and self.collision is not None:
                 try:
-                    from ._collision_warp import WarpBodyCollider
-                    collision = WarpBodyCollider(
-                        collider_names=_wp.collision_target_names(),
-                        n_total=self.n_total,
-                        points_per_strand=POINTS_PER_STRAND,
-                        margin=_wp.COLLISION_MARGIN,
-                        search_distance=_wp.COLLISION_SEARCH,
-                    )
+                    self.collision.update_from_collider_names()
+                    collision = self.collision
                 except Exception as exc:
                     if _wp.CLOTH_COLLISION_TARGET.strip():
                         print(
-                            "[yurameki/record] Warp collision unavailable "
+                            "[yurameki/record] Warp collision update failed "
                             f"with Cloth Collider: {exc!r}"
                         )
                         return False
                     print(
-                        "[yurameki/record] Warp collision unavailable; "
+                        "[yurameki/record] Warp collision update failed; "
                         f"using Python BVH: {exc!r}"
                     )
                     body_bvh = _sim_taichi.build_body_bvh(

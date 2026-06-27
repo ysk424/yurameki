@@ -1,6 +1,7 @@
 # Yurameki（揺らめき）
 
 Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミュレーション拡張です。
+名前は日本語の動詞「揺らめく」の名詞形です。
 [Tokoya](https://github.com/ysk424/blender-tokoya-extension) からシミュレーション核だけを
 取り出した派生プロジェクトで、既存のHair CurvesオブジェクトをアニメーションするBodyメッシュに
 沿って計算し、フレームレンジを一括ベイクします。
@@ -16,6 +17,9 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.1.9: CUDA/Warp collision meshes are reused during range bake; animated
+  Body/Cloth evaluated vertices are updated per subframe and the mesh BVH is
+  refit instead of rebuilt.
 - v0.1.8: optional `Cloth` collider picker. The selected mesh is read as an
   evaluated mesh each subframe, so Alembic geometry-cache deformation is used
   for CUDA/Warp collision together with the Body mesh.

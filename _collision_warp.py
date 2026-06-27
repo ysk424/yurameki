@@ -169,6 +169,28 @@ def _evaluated_mesh_arrays(mesh_name: str):
         evaluated.to_mesh_clear()
 
 
+def _evaluated_mesh_vertices(mesh_name: str):
+    import bpy
+    body = bpy.data.objects.get(mesh_name)
+    if body is None or body.type != "MESH":
+        raise ValueError(f"Collision mesh {mesh_name!r} not found")
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = body.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    try:
+        vertex_count = len(mesh.vertices)
+        vertices = np.empty(vertex_count * 3, dtype=np.float32)
+        mesh.vertices.foreach_get("co", vertices)
+        vertices = vertices.reshape(-1, 3)
+        matrix = np.array(evaluated.matrix_world, dtype=np.float32)
+        homogeneous = np.column_stack(
+            (vertices, np.ones(vertex_count, dtype=np.float32))
+        )
+        return (homogeneous @ matrix.T)[:, :3].astype(np.float32, copy=False)
+    finally:
+        evaluated.to_mesh_clear()
+
+
 def _evaluated_collision_arrays(mesh_names):
     names = [name for name in mesh_names if name]
     if not names:
@@ -185,6 +207,25 @@ def _evaluated_collision_arrays(mesh_names):
         np.ascontiguousarray(np.concatenate(vertex_parts, axis=0), dtype=np.float32),
         np.ascontiguousarray(np.concatenate(index_parts, axis=0), dtype=np.int32),
     )
+
+
+def _evaluated_collision_vertices(mesh_names, expected_count: int | None = None):
+    names = [name for name in mesh_names if name]
+    if not names:
+        raise ValueError("No collision meshes selected")
+    vertex_parts = []
+    for name in names:
+        vertices = _evaluated_mesh_vertices(name)
+        vertex_parts.append(vertices)
+    vertices = np.ascontiguousarray(
+        np.concatenate(vertex_parts, axis=0), dtype=np.float32
+    )
+    if expected_count is not None and len(vertices) != expected_count:
+        raise ValueError(
+            "Collision mesh topology changed: "
+            f"expected {expected_count} vertices, got {len(vertices)}"
+        )
+    return vertices
 
 
 def _evaluated_body_arrays(body_name: str):
@@ -212,6 +253,7 @@ class WarpBodyCollider:
         )
         self.margin = float(margin)
         self.search_distance = float(search_distance)
+        self.collider_names = list(collider_names or [])
 
         if triangles is not None:
             vertices, indices = triangles
@@ -222,6 +264,7 @@ class WarpBodyCollider:
         else:
             vertices, indices = _evaluated_body_arrays(body_name)
         self.points = wp.array(vertices, dtype=wp.vec3, device=self.device)
+        self.vertex_count = len(vertices)
         self.mesh = wp.Mesh(
             points=self.points,
             indices=wp.array(
@@ -246,6 +289,12 @@ class WarpBodyCollider:
         """
         self.points.assign(np.ascontiguousarray(vertices, dtype=np.float32))
         self.mesh.refit()
+
+    def update_from_collider_names(self):
+        vertices = _evaluated_collision_vertices(
+            self.collider_names, expected_count=self.vertex_count
+        )
+        self.update_mesh(vertices)
 
     def __call__(
         self,
