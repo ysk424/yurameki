@@ -8,6 +8,10 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 
 植毛・カット・スタイリングは行いません。毛はTokoyaなどで用意してください。
 
+## Demo video
+
+- [YURAMEKI: Free Long Hair Simulation for Blender](https://youtu.be/a5TuKmiJEBw)
+
 ## 主な機能
 
 - Taichi XPBD ソルバー（CUDA 既定 / Vulkan / CPU）
@@ -126,6 +130,15 @@ strand gets all points `p0..p8` from the midpoint of the previous and next
 strand numbers. This intentionally moves roots as well as tips, and is meant as
 a user-triggered seasoning pass rather than an always-on simulation rule.
 
+Clean up buttons are intentionally manual and taste-dependent. They are closer
+to optional seasoning than to a physically neutral simulation step. In the
+current long-straight-hair test, Clean up is visibly effective, but the preferred
+amount depends on the look of the shot.
+
+One current performance reference is about 4 minutes for a 240-frame simulation
+on the author's test scene. This is a scene-specific measurement, not a
+guarantee, but it is useful as a rough baseline while tuning the CUDA/Warp path.
+
 Clean repairs must verify the evaluated Curves result after writing. A single
 write to the original Curves datablock may not survive the Deform Curves on
 Surface / Surface Deform round-trip for large shape changes. The practical
@@ -137,6 +150,12 @@ The Empty is only an expensive interactive label, not the final detection
 method. It can still be used as a root-finder/debug probe: given an Empty or
 picked world-space point near a suspicious hair point, report the owning strand
 number, point index, root position, and tip position.
+
+## Development note
+
+If you want to modify the simulation, using Codex is recommended. It is useful
+for tracing the solver code, comparing cleanup strategies, and making small
+experimental changes safely.
 
 ## ライセンス
 
