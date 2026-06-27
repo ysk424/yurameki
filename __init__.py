@@ -119,14 +119,59 @@ class YURAMEKI_OT_condition_groom(Operator):
         return {"FINISHED"}
 
 
-class YURAMEKI_OT_comb_1(Operator):
-    bl_idname = "yurameki.comb_1"
-    bl_label = "Comb 1"
-    bl_description = "Reserved button for Comb 1 local-neighbour repair"
+def _tag_redraw(context):
+    area = getattr(context, "area", None)
+    if area is not None:
+        area.tag_redraw()
+
+
+class _BusyOperatorMixin:
+    busy_prop = ""
+
+    def invoke(self, context, _event):
+        if self.busy_prop:
+            setattr(context.window_manager, self.busy_prop, True)
+        _tag_redraw(context)
+        self._busy_timer = context.window_manager.event_timer_add(
+            0.01, window=context.window
+        )
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type != "TIMER":
+            return {"RUNNING_MODAL"}
+        context.window_manager.event_timer_remove(self._busy_timer)
+        return self._execute_busy(context)
 
     def execute(self, context):
+        if self.busy_prop:
+            setattr(context.window_manager, self.busy_prop, True)
+        _tag_redraw(context)
+        return self._execute_busy(context)
+
+    def _execute_busy(self, context):
+        try:
+            return self._execute(context)
+        finally:
+            if self.busy_prop:
+                setattr(context.window_manager, self.busy_prop, False)
+            _tag_redraw(context)
+
+
+class YURAMEKI_OT_cleanup_1(_BusyOperatorMixin, Operator):
+    bl_idname = "yurameki.cleanup_1"
+    bl_label = "Clean 1"
+    bl_description = "Clean up baked frames with local-neighbour distance repair"
+    busy_prop = "yurameki_cleanup_running"
+
+    def _execute(self, context):
         from . import _comb
-        result = _comb.comb_1_current_frame()
+        wm = context.window_manager
+        result = _comb.cleanup_1_range(
+            int(wm.yurameki_bake_start),
+            int(wm.yurameki_bake_end),
+        )
         if not result.ok:
             self.report({"ERROR"}, result.message)
             return {"CANCELLED"}
@@ -134,14 +179,19 @@ class YURAMEKI_OT_comb_1(Operator):
         return {"FINISHED"}
 
 
-class YURAMEKI_OT_comb_2(Operator):
-    bl_idname = "yurameki.comb_2"
-    bl_label = "Comb 2"
-    bl_description = "Reserved button for Comb 2 tail-bend repair"
+class YURAMEKI_OT_cleanup_2(_BusyOperatorMixin, Operator):
+    bl_idname = "yurameki.cleanup_2"
+    bl_label = "Clean 2"
+    bl_description = "Clean up baked frames with tail-bend repair"
+    busy_prop = "yurameki_cleanup_running"
 
-    def execute(self, context):
+    def _execute(self, context):
         from . import _comb
-        result = _comb.comb_2_current_frame()
+        wm = context.window_manager
+        result = _comb.cleanup_2_range(
+            int(wm.yurameki_bake_start),
+            int(wm.yurameki_bake_end),
+        )
         if not result.ok:
             self.report({"ERROR"}, result.message)
             return {"CANCELLED"}
@@ -149,14 +199,19 @@ class YURAMEKI_OT_comb_2(Operator):
         return {"FINISHED"}
 
 
-class YURAMEKI_OT_comb_3(Operator):
-    bl_idname = "yurameki.comb_3"
-    bl_label = "Comb 3"
-    bl_description = "Reserved button for Comb 3"
+class YURAMEKI_OT_cleanup_3(_BusyOperatorMixin, Operator):
+    bl_idname = "yurameki.cleanup_3"
+    bl_label = "Clean 3"
+    bl_description = "Reserved button for Clean 3"
+    busy_prop = "yurameki_cleanup_running"
 
-    def execute(self, context):
+    def _execute(self, context):
         from . import _comb
-        result = _comb.comb_3_current_frame()
+        wm = context.window_manager
+        result = _comb.cleanup_3_range(
+            int(wm.yurameki_bake_start),
+            int(wm.yurameki_bake_end),
+        )
         self.report({"WARNING"}, result.message)
         return {"FINISHED"}
 
@@ -180,15 +235,16 @@ class YURAMEKI_OT_record(Operator):
         return {"FINISHED"}
 
 
-class YURAMEKI_OT_bake_range(Operator):
+class YURAMEKI_OT_bake_range(_BusyOperatorMixin, Operator):
     bl_idname = "yurameki.bake_range"
     bl_label = "Simulate Range"
     bl_description = (
         "Simulate the Start..End frame range in one batch and cache every "
         "frame for timeline playback and export"
     )
+    busy_prop = "yurameki_bake_running"
 
-    def execute(self, context):
+    def _execute(self, context):
         obj = _find_curves_obj()
         if obj is None:
             self.report({"ERROR"}, "Need exactly one Curves object"); return {"CANCELLED"}
@@ -265,9 +321,9 @@ class YURAMEKI_OT_pick_body(Operator):
 _classes = (
     YURAMEKI_OT_simulate,
     YURAMEKI_OT_condition_groom,
-    YURAMEKI_OT_comb_1,
-    YURAMEKI_OT_comb_2,
-    YURAMEKI_OT_comb_3,
+    YURAMEKI_OT_cleanup_1,
+    YURAMEKI_OT_cleanup_2,
+    YURAMEKI_OT_cleanup_3,
     YURAMEKI_OT_record,
     YURAMEKI_OT_bake_range,
     YURAMEKI_OT_use_scene_range,
@@ -324,6 +380,7 @@ _PROP_NAMES = (
     "yurameki_interpolation_mag", "yurameki_record_mode",
     "yurameki_compute_backend", "yurameki_body_obj",
     "yurameki_bake_start", "yurameki_bake_end", "yurameki_export_path",
+    "yurameki_bake_running", "yurameki_cleanup_running",
     "yurameki_spring_ke", "yurameki_damping", "yurameki_particle_mass",
     "yurameki_gravity", "yurameki_iterations",
     "yurameki_bending_enabled", "yurameki_root_bending_ke", "yurameki_bending_ke",
@@ -405,6 +462,10 @@ def register():
         WindowManager.yurameki_export_path = StringProperty(
             name="Export Path", description="Alembic (.abc) output file",
             default="//hair.abc", subtype="FILE_PATH", options={"SKIP_SAVE"})
+        WindowManager.yurameki_bake_running = BoolProperty(
+            name="Bake Running", default=False, options={"SKIP_SAVE"})
+        WindowManager.yurameki_cleanup_running = BoolProperty(
+            name="Clean Running", default=False, options={"SKIP_SAVE"})
         WindowManager.yurameki_spring_ke = FloatProperty(
             name="Stiffness 10^N", default=math.log10(defaults["SPRING_KE"]),
             min=1.0, max=9.0, step=10, precision=2, options={"SKIP_SAVE"})

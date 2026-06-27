@@ -1,4 +1,4 @@
-"""Manual comb repair operators for baked Yurameki frames."""
+"""Manual clean-up repair helpers for baked Yurameki frames."""
 from __future__ import annotations
 
 import math
@@ -163,13 +163,16 @@ def _display_cached_frame_iterative(obj, frame: int) -> tuple[int, float]:
     return DISPLAY_WRITE_PASSES, residual_mm
 
 
-def _comb_current_frame(make_bad_mask) -> CombResult:
-    obj = _find_curves_obj()
-    if obj is None:
-        return CombResult(False, "Need exactly one Curves object")
-
+def _repair_cached_frame(
+    obj,
+    frame: int,
+    make_bad_mask,
+    display: bool,
+    basis: np.ndarray | None = None,
+    neighbours: np.ndarray | None = None,
+) -> CombResult:
     manager = _recording.manager
-    frame = int(bpy.context.scene.frame_current)
+    frame = int(frame)
     cached = manager.frames.get(frame)
     if cached is None:
         return CombResult(False, f"No baked cache for frame {frame}")
@@ -182,15 +185,20 @@ def _comb_current_frame(make_bad_mask) -> CombResult:
         return CombResult(False, "Point count is not divisible by strand size")
 
     n_strands = len(positions) // POINTS_PER_STRAND
-    try:
-        basis, neighbours = _basis_and_neighbours(obj, n_strands)
-    except Exception as exc:
-        return CombResult(False, f"Neighbour build failed: {exc!r}")
+    if basis is None or neighbours is None:
+        try:
+            basis, neighbours = _basis_and_neighbours(obj, n_strands)
+        except Exception as exc:
+            return CombResult(False, f"Neighbour build failed: {exc!r}")
+    elif len(basis) != n_strands or len(neighbours) != n_strands:
+        return CombResult(False, "Cached strand count changed within range")
 
     bad_mask = make_bad_mask(positions, neighbours)
     selected = int(np.sum(bad_mask))
     if selected == 0:
-        passes, residual = _display_cached_frame_iterative(obj, frame)
+        passes, residual = (
+            _display_cached_frame_iterative(obj, frame) if display else (0, 0.0)
+        )
         return CombResult(
             True,
             f"No strands selected on frame {frame}",
@@ -203,7 +211,9 @@ def _comb_current_frame(make_bad_mask) -> CombResult:
     )
     manager.frames[frame] = (fixed_positions, fixed_velocities)
     manager.dirty = True
-    passes, residual = _display_cached_frame_iterative(obj, frame)
+    passes, residual = (
+        _display_cached_frame_iterative(obj, frame) if display else (0, 0.0)
+    )
     return CombResult(
         True,
         (
@@ -218,20 +228,126 @@ def _comb_current_frame(make_bad_mask) -> CombResult:
     )
 
 
+def _cleanup_current_frame(make_bad_mask) -> CombResult:
+    obj = _find_curves_obj()
+    if obj is None:
+        return CombResult(False, "Need exactly one Curves object")
+    return _repair_cached_frame(
+        obj, int(bpy.context.scene.frame_current), make_bad_mask, True
+    )
+
+
+def _cleanup_range(start: int, end: int, make_bad_mask) -> CombResult:
+    if end < start:
+        return CombResult(False, f"End frame {end} is before start frame {start}")
+    obj = _find_curves_obj()
+    if obj is None:
+        return CombResult(False, "Need exactly one Curves object")
+
+    first_cached = None
+    for frame in range(int(start), int(end) + 1):
+        cached = _recording.manager.frames.get(frame)
+        if cached is not None:
+            first_cached = cached
+            break
+    if first_cached is None:
+        return CombResult(False, f"No baked cache frames in {int(start)}-{int(end)}")
+    positions = first_cached[0]
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        return CombResult(False, "Invalid baked position cache")
+    if len(positions) % POINTS_PER_STRAND:
+        return CombResult(False, "Point count is not divisible by strand size")
+    n_strands = len(positions) // POINTS_PER_STRAND
+    try:
+        basis, neighbours = _basis_and_neighbours(obj, n_strands)
+    except Exception as exc:
+        return CombResult(False, f"Neighbour build failed: {exc!r}")
+
+    total_selected = 0
+    total_repaired = 0
+    total_skipped = 0
+    missing = []
+    for frame in range(int(start), int(end) + 1):
+        if frame not in _recording.manager.frames:
+            missing.append(frame)
+            continue
+        result = _repair_cached_frame(
+            obj, frame, make_bad_mask, False, basis, neighbours
+        )
+        if not result.ok:
+            return result
+        total_selected += result.selected
+        total_repaired += result.repaired
+        total_skipped += result.skipped
+
+    current_frame = int(bpy.context.scene.frame_current)
+    passes = 0
+    residual = 0.0
+    if current_frame in _recording.manager.frames:
+        passes, residual = _display_cached_frame_iterative(obj, current_frame)
+
+    suffix = "" if not missing else f"; skipped {len(missing)} missing frames"
+    return CombResult(
+        True,
+        (
+            f"Frames {int(start)}-{int(end)}: selected {total_selected}, "
+            f"repaired {total_repaired}, skipped {total_skipped}{suffix}"
+        ),
+        selected=total_selected,
+        repaired=total_repaired,
+        skipped=total_skipped + len(missing),
+        display_passes=passes,
+        display_residual_mm=residual,
+    )
+
+
+def _cleanup1_bad_mask(positions, neighbours):
+    scores = _comb1_scores(positions, neighbours)
+    return scores > COMB1_THRESHOLD_MM
+
+
+def _cleanup2_bad_mask(positions, _neighbours):
+    return _tail_max_angles(positions) >= COMB2_ANGLE_RAD
+
+
+def cleanup_1_current_frame() -> CombResult:
+    return _cleanup_current_frame(_cleanup1_bad_mask)
+
+
+def cleanup_2_current_frame() -> CombResult:
+    return _cleanup_current_frame(_cleanup2_bad_mask)
+
+
+def cleanup_1_range(start: int, end: int) -> CombResult:
+    return _cleanup_range(start, end, _cleanup1_bad_mask)
+
+
+def cleanup_2_range(start: int, end: int) -> CombResult:
+    return _cleanup_range(start, end, _cleanup2_bad_mask)
+
+
+def cleanup_3_current_frame() -> CombResult:
+    return CombResult(False, "Clean 3 is not implemented yet")
+
+
+def cleanup_3_range(_start: int, _end: int) -> CombResult:
+    return CombResult(False, "Clean 3 is not implemented yet")
+
+
 def comb_1_current_frame() -> CombResult:
     def make_bad_mask(positions, neighbours):
         scores = _comb1_scores(positions, neighbours)
         return scores > COMB1_THRESHOLD_MM
 
-    return _comb_current_frame(make_bad_mask)
+    return _cleanup_current_frame(make_bad_mask)
 
 
 def comb_2_current_frame() -> CombResult:
     def make_bad_mask(positions, _neighbours):
         return _tail_max_angles(positions) >= COMB2_ANGLE_RAD
 
-    return _comb_current_frame(make_bad_mask)
+    return _cleanup_current_frame(make_bad_mask)
 
 
 def comb_3_current_frame() -> CombResult:
-    return CombResult(False, "Comb 3 is not implemented yet")
+    return CombResult(False, "Clean 3 is not implemented yet")

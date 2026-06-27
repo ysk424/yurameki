@@ -14,9 +14,10 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - 現在フレームの静的整髪（`Simulate`）
 - **指定レンジの一括シミュレーション（`Simulate Range`）**
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
-- タイムライン録画（`REC`）と圧縮キャッシュ再生
+- `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
-- v0.1.6: ベイク済みの現在フレームに対する Comb 1 / Comb 2 修復ボタンを追加しました。
+- v0.1.7: `Comb` を `Clean` に改名し、Clean 1 / Clean 2 を Start-End のベイク範囲へ適用するようにしました。RECボタンは削除し、`Simulate Range` が録画開始を兼ねます。
+- v0.1.6: ベイク済みの現在フレームに対する修復ボタンを追加しました。
 - v0.1.5: Warp CUDA 経路に rest pose からの角度LIMITを追加しました。
 - v0.1.4: 頭部の急な移動で Body が毛へ入り込むケースを抑えるため、
   自由点を毛根移動へ事前追従させます。
@@ -37,7 +38,8 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 3. 必要なら `Simulate` で現在フレームの形を整えます。
 4. `Bake & Export` で Start / End を指定（`Use Scene Range` でシーン範囲を流用）。
 5. `Simulate Range` でレンジ全体を計算し、各フレームをキャッシュします。
-6. タイムラインを再生すると、ベイク結果が再生されます。
+6. 必要なら `Clean 1` / `Clean 2` を押して、Start / End のキャッシュ範囲を修復します。
+7. タイムラインを再生すると、ベイク結果が再生されます。
 
 ## Alembic 書き出し
 
@@ -57,9 +59,14 @@ after the existing segment and bending springs. It is intentionally a single
 global value for now, so the effect of the angle limit can be evaluated before
 adding UI controls or per-point/texture-style maps.
 
-## Comb repair notes
+## Clean repair notes
 
-Comb 1 is the planned local-neighbour repair comb. For every strand, build a
+The UI name is `Clean`; the original working name was `Comb`. `Clean 1` and
+`Clean 2` operate on the baked cache for the configured Start-End range. The
+current frame display is refreshed after the range cache is repaired. `Clean 3`
+is still a reserved button.
+
+Clean 1 is the local-neighbour repair. For every strand, build a
 stable neighbour list from `surface_uv_coordinate` using the nearest 16 strand
 roots in UV space. The separation score is:
 
@@ -80,13 +87,13 @@ neighbour list cached, the score calculation itself was about 0.02 seconds.
 
 The repair target should be built only from valid neighbours whose own score is
 at or below the threshold. Detection uses the root-zone points `p1..p5`, but the
-actual comb repair must rebuild the full strand shape through the tip. Copy the
+actual repair must rebuild the full strand shape through the tip. Copy the
 valid neighbours' root-relative curves for `p1..p8` back onto the broken strand
 root, preferably as an inverse-distance weighted blend of the nearest 2-4 valid
 neighbours. Keep the broken strand root fixed and blend the result by a user
 strength value.
 
-Comb 2 is the planned tail-bend repair comb. A strand is selected when at least
+Clean 2 is the tail-bend repair. A strand is selected when at least
 one tail bend angle at `p5`, `p6`, or `p7` is `>= 0.5` radians, where a bend
 angle is:
 
@@ -96,19 +103,19 @@ angle(pJ) = acos(dot(normalize(pJ - pJ-1), normalize(pJ+1 - pJ)))
 
 Straight continuation is `0` radians. The default threshold is `0.5` radians
 (about 28.65 degrees). Once selected, the repair is the same root-preserving
-neighbour interpolation used by Comb 1: find valid nearby UV-neighbour strands,
+neighbour interpolation used by Clean 1: find valid nearby UV-neighbour strands,
 blend the nearest 2-4 valid root-relative curves, and rebuild `p1..p8` through
-the tip while keeping `p0` fixed. In the current frame-123 MCP test, Comb 2
+the tip while keeping `p0` fixed. In the current frame-123 MCP test, Clean 2
 selected 151 strands, repaired all 151, and reduced the selected tail-bend
 maximum below `0.5` radians.
 
-Comb repairs must verify the evaluated Curves result after writing. A single
+Clean repairs must verify the evaluated Curves result after writing. A single
 write to the original Curves datablock may not survive the Deform Curves on
 Surface / Surface Deform round-trip for large shape changes. The practical
 writeback path is iterative: write the desired evaluated world curve using the
 current evaluated-original offset, update the depsgraph, re-read the evaluated
 curve, then repeat until the measured tail-bend/error threshold is satisfied.
-In the frame-123 Comb-2 test, one-shot writeback left visible failures, while
+In the frame-123 Clean-2 test, one-shot writeback left visible failures, while
 iterative writeback reached zero `p5..p7 >= 0.5 rad` strands after 7 iterations.
 
 The Empty is only an expensive interactive label, not the final detection

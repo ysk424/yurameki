@@ -45,9 +45,10 @@ class YURAMEKI_PT_main(Panel):
         col.prop(wm, "yurameki_simulation_steps")
         col.operator("yurameki.simulate", icon="PLAY")
         row = col.row(align=True)
-        row.operator("yurameki.comb_1", text="Comb 1", icon="BRUSH_DATA")
-        row.operator("yurameki.comb_2", text="Comb 2", icon="BRUSH_DATA")
-        row.operator("yurameki.comb_3", text="Comb 3", icon="BRUSH_DATA")
+        row.alert = getattr(wm, "yurameki_cleanup_running", False)
+        row.operator("yurameki.cleanup_1", text="Clean 1", icon="BRUSH_DATA")
+        row.operator("yurameki.cleanup_2", text="Clean 2", icon="BRUSH_DATA")
+        row.operator("yurameki.cleanup_3", text="Clean 3", icon="BRUSH_DATA")
 
         # Range bake + export
         box = layout.box()
@@ -65,15 +66,14 @@ class YURAMEKI_PT_main(Panel):
         if wm.yurameki_auto_frame_interpolation:
             col.label(text=f"Auto Steps: {wm.yurameki_auto_interpolation_current}")
         col.separator()
-        col.operator("yurameki.bake_range", icon="RENDER_ANIMATION")
-        recording = getattr(wm, "yurameki_record_mode", "PLAYBACK") == "RECORDING"
         row = col.row(align=True)
-        row.alert = recording
+        baking = getattr(wm, "yurameki_bake_running", False)
+        row.alert = baking
         row.operator(
-            "yurameki.record",
-            text="REC" if not recording else "REC ●",
-            icon="REC",
-            depress=recording,
+            "yurameki.bake_range",
+            text="Simulate Range" if not baking else "Simulate Range ●",
+            icon="RENDER_ANIMATION",
+            depress=baking,
         )
         col.separator()
         col.prop(wm, "yurameki_export_path", text="")
