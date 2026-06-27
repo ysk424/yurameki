@@ -13,5 +13,6 @@
     "ANGLE_LIMIT_KE":         1000000.0,
     "COLLISION_MARGIN":       0.0005,
     "COLLISION_SEARCH":       0.003,
+    "ROOT_MIN_DISTANCE":      0.0001,
     "BODY_COLLISION_TARGET": "CC_Base_Body"
 }

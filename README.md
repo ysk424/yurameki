@@ -51,16 +51,21 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - 可変関節数のCurveにはまだ対応していません。
 - Curves object の総ポイント数は `9` で割り切れる必要があります。
 - 各strandは `p0` がroot、`p1` がroot anchor、`p2..p8` が自由点として扱われます。
+- `Check Hair` verifies these conditions before simulation. `Simulate` and
+  `Simulate Range` also run the same check and stop with a warning if it fails.
+- `Root Min Distance mm` separates roots that are too close by moving the whole
+  strand slightly, preserving its shape as much as possible.
 
 ## 基本操作
 
 1. シーンに Hair Curves オブジェクトを1つ用意します（Tokoya で植毛したものなど）。
 2. `Body` にアニメーション追従兼コライダーの Mesh を設定します。
    必要なら `Cloth` に Alembic geometry-cache Mesh を設定します。
-3. 必要なら `Simulate` で現在フレームの形を整えます。
-4. `Bake & Export` で Start / End を指定（`Use Scene Range` でシーン範囲を流用）。
-5. `Simulate Range` でレンジ全体を計算し、各フレームをキャッシュします。
-6. タイムラインを再生すると、ベイク結果が再生されます。
+3. `Check Hair` でstrand構造とroot距離を確認します。
+4. 必要なら `Simulate` で現在フレームの形を整えます。
+5. `Bake & Export` で Start / End を指定（`Use Scene Range` でシーン範囲を流用）。
+6. `Simulate Range` でレンジ全体を計算し、各フレームをキャッシュします。
+7. タイムラインを再生すると、ベイク結果が再生されます。
 
 ## Alembic 書き出し
 

@@ -38,6 +38,13 @@ class YURAMEKI_PT_main(Panel):
         row = col.row(align=True)
         row.prop(wm, "yurameki_cloth_obj", text="Cloth")
         row.operator("yurameki.pick_cloth", text="", icon="EYEDROPPER")
+        col.prop(wm, "yurameki_root_min_distance")
+        row = col.row(align=True)
+        row.operator("yurameki.check_hair", icon="CHECKMARK")
+        status = getattr(wm, "yurameki_hair_check_status", "")
+        if status:
+            icon = "CHECKMARK" if getattr(wm, "yurameki_hair_check_ok", False) else "ERROR"
+            col.label(text=status, icon=icon)
 
         # Static styling on the current frame
         box = layout.box()

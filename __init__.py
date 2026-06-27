@@ -7,6 +7,7 @@ an animated Body mesh, and bakes a frame range for playback and export.
 from __future__ import annotations
 import json, math, os
 import bpy
+import numpy as np
 from bpy.app.handlers import persistent
 from bpy.props import (
     BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty,
@@ -44,6 +45,112 @@ def _find_curves_obj():
     return objs[0] if len(objs) == 1 else None
 
 
+def _curve_spans(curves_data):
+    return [
+        (int(curve.first_point_index), int(curve.points_length))
+        for curve in curves_data.curves
+    ]
+
+
+def _repair_close_roots(obj, scene, spans, min_distance_m: float) -> int:
+    if min_distance_m <= 0.0 or len(spans) < 2:
+        return 0
+    from math import cos, sin
+    from mathutils import Vector
+    from mathutils.kdtree import KDTree
+    from . import _world_passthrough as _wp
+
+    n_total = len(obj.data.points)
+    repaired_pairs = 0
+    for _pass in range(4):
+        dg = bpy.context.evaluated_depsgraph_get()
+        obj_eval = obj.evaluated_get(dg)
+        eval_world = _wp._read_world(
+            obj_eval.data, n_total, obj_eval.matrix_world
+        )
+        orig_world = _wp._read_world(
+            obj.data, n_total, obj.matrix_world
+        )
+        if eval_world is None or orig_world is None:
+            return repaired_pairs
+        offset_world = eval_world - orig_world
+
+        roots = eval_world[[start for start, _length in spans]]
+        tree = KDTree(len(roots))
+        for index, root in enumerate(roots):
+            tree.insert(Vector(root), index)
+        tree.balance()
+
+        offsets = np.zeros_like(roots)
+        pairs_this_pass = 0
+        for i, root in enumerate(roots):
+            for co, j, dist in tree.find_range(Vector(root), min_distance_m):
+                if j <= i:
+                    continue
+                push = min_distance_m - float(dist)
+                if push <= 0.0:
+                    continue
+                if dist > 1.0e-9:
+                    direction = (Vector(root) - co).normalized()
+                else:
+                    angle = float((i + 1) * 12.9898 + (j + 1) * 78.233)
+                    direction = Vector((cos(angle), sin(angle), 0.0)).normalized()
+                delta = np.array(direction, dtype=np.float32) * (push * 0.5)
+                offsets[i] += delta
+                offsets[j] -= delta
+                pairs_this_pass += 1
+
+        if pairs_this_pass == 0:
+            break
+        for strand, (start, length) in enumerate(spans):
+            eval_world[start:start + length] += offsets[strand]
+        _wp._write_world(obj, eval_world, offset=offset_world)
+        bpy.context.view_layer.update()
+        repaired_pairs += pairs_this_pass
+    return repaired_pairs
+
+
+def _check_hair(context, repair_roots: bool = True):
+    obj = _find_curves_obj()
+    if obj is None:
+        return False, "Need exactly one Curves object"
+    wm = context.window_manager
+    spans = _curve_spans(obj.data)
+    if not spans:
+        return False, "Curves object has no strands"
+    lengths = [length for _start, length in spans]
+    unique_lengths = sorted(set(lengths))
+    if len(unique_lengths) != 1:
+        return (
+            False,
+            "Hair Check failed: strands have different point counts "
+            f"({unique_lengths[:8]})",
+        )
+    pps = unique_lengths[0]
+    if pps < 3:
+        return False, f"Hair Check failed: {pps} points per strand is too small"
+
+    from . import _recording
+    if pps != _recording.POINTS_PER_STRAND:
+        return (
+            False,
+            "Hair Check failed: this version supports "
+            f"{_recording.POINTS_PER_STRAND} points per strand, got {pps}",
+        )
+
+    min_distance_m = float(wm.yurameki_root_min_distance) / 1000.0
+    repaired = 0
+    if repair_roots:
+        repaired = _repair_close_roots(obj, context.scene, spans, min_distance_m)
+
+    message = (
+        f"Hair Check PASS: {len(spans)} strands, {pps} points per strand"
+    )
+    if repaired:
+        message += f"; repaired {repaired} close root pairs"
+    return True, message
+
+
 def _clear_recording_cache():
     from . import _recording
     _recording.manager.clear()
@@ -71,6 +178,12 @@ class YURAMEKI_OT_simulate(Operator):
         if obj is None:
             self.report({"ERROR"}, "Need exactly one Curves object"); return {"CANCELLED"}
         wm = context.window_manager
+        ok, message = _check_hair(context, repair_roots=True)
+        wm.yurameki_hair_check_ok = ok
+        wm.yurameki_hair_check_status = message
+        if not ok:
+            self.report({"WARNING"}, message)
+            return {"CANCELLED"}
         _snapshot_sim_params(wm)
 
         from . import _world_passthrough as _wp
@@ -93,6 +206,23 @@ class YURAMEKI_OT_simulate(Operator):
         _clear_recording_cache()
         self.report({"INFO"}, status)
         return {"FINISHED"}
+
+
+class YURAMEKI_OT_check_hair(Operator):
+    bl_idname = "yurameki.check_hair"
+    bl_label = "Check Hair"
+    bl_description = "Validate hair strands and separate roots that are too close"
+
+    def execute(self, context):
+        ok, message = _check_hair(context, repair_roots=True)
+        wm = context.window_manager
+        wm.yurameki_hair_check_ok = ok
+        wm.yurameki_hair_check_status = message
+        self.report({"INFO"} if ok else {"WARNING"}, message)
+        if ok:
+            _clear_recording_cache()
+            return {"FINISHED"}
+        return {"CANCELLED"}
 
 
 def _tag_redraw(context):
@@ -168,6 +298,12 @@ class YURAMEKI_OT_bake_range(_BusyOperatorMixin, Operator):
         if obj is None:
             self.report({"ERROR"}, "Need exactly one Curves object"); return {"CANCELLED"}
         wm = context.window_manager
+        ok, message = _check_hair(context, repair_roots=True)
+        wm.yurameki_hair_check_ok = ok
+        wm.yurameki_hair_check_status = message
+        if not ok:
+            self.report({"WARNING"}, message)
+            return {"CANCELLED"}
         body = bpy.data.objects.get(wm.yurameki_body_obj.strip())
         if body is None or body.type != "MESH":
             self.report({"ERROR"}, "Select a Body Mesh first"); return {"CANCELLED"}
@@ -259,6 +395,7 @@ class YURAMEKI_OT_pick_cloth(Operator):
 
 _classes = (
     YURAMEKI_OT_simulate,
+    YURAMEKI_OT_check_hair,
     YURAMEKI_OT_record,
     YURAMEKI_OT_bake_range,
     YURAMEKI_OT_use_scene_range,
@@ -321,6 +458,8 @@ _PROP_NAMES = (
     "yurameki_spring_ke", "yurameki_damping", "yurameki_particle_mass",
     "yurameki_gravity", "yurameki_iterations",
     "yurameki_collision_margin", "yurameki_collision_search",
+    "yurameki_root_min_distance", "yurameki_hair_check_ok",
+    "yurameki_hair_check_status",
     "yurameki_bending_enabled", "yurameki_root_bending_ke", "yurameki_bending_ke",
 )
 
@@ -419,6 +558,14 @@ def register():
             name="Collision Search mm",
             default=float(defaults.get("COLLISION_SEARCH", 0.003)) * 1000.0,
             min=0.1, max=100.0, step=10, precision=3, options={"SKIP_SAVE"})
+        WindowManager.yurameki_root_min_distance = FloatProperty(
+            name="Root Min Distance mm",
+            default=float(defaults.get("ROOT_MIN_DISTANCE", 0.0001)) * 1000.0,
+            min=0.0, max=10.0, step=10, precision=3, options={"SKIP_SAVE"})
+        WindowManager.yurameki_hair_check_ok = BoolProperty(
+            name="Hair Check OK", default=False, options={"SKIP_SAVE"})
+        WindowManager.yurameki_hair_check_status = StringProperty(
+            name="Hair Check", default="Hair not checked", options={"SKIP_SAVE"})
         WindowManager.yurameki_bending_enabled = BoolProperty(
             name="Bending", default=bool(defaults["BENDING_ENABLED"]),
             options={"SKIP_SAVE"})
