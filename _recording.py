@@ -476,9 +476,12 @@ class RecordingManager:
             return False
         try:
             with np.load(path, allow_pickle=False) as data:
+                global POINTS_PER_STRAND
                 pps = int(data["points_per_strand"][0])
-                if pps != POINTS_PER_STRAND:
+                if pps < 3:
                     raise ValueError(f"unsupported points-per-strand: {pps}")
+                POINTS_PER_STRAND = pps
+                _wp.POINTS_PER_STRAND = pps
                 frames = data["frames"].astype(np.int32, copy=False)
                 positions = data["positions"].astype(np.float32, copy=False)
                 velocities = data["velocities"].astype(np.float32, copy=False)

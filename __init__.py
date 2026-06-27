@@ -25,6 +25,10 @@ def _load_defaults():
 
 def _snapshot_sim_params(wm):
     from . import _world_passthrough as _wp
+    from . import _recording
+    pps = max(3, int(wm.yurameki_points_per_strand))
+    _wp.POINTS_PER_STRAND = pps
+    _recording.POINTS_PER_STRAND = pps
     _wp.SPRING_KE       = 10.0 ** wm.yurameki_spring_ke
     _wp.DAMPING         = wm.yurameki_damping       / 100.0
     _wp.PARTICLE_MASS   = wm.yurameki_particle_mass / 1000.0
@@ -129,14 +133,7 @@ def _check_hair(context, repair_roots: bool = True):
     pps = unique_lengths[0]
     if pps < 3:
         return False, f"Hair Check failed: {pps} points per strand is too small"
-
-    from . import _recording
-    if pps != _recording.POINTS_PER_STRAND:
-        return (
-            False,
-            "Hair Check failed: this version supports "
-            f"{_recording.POINTS_PER_STRAND} points per strand, got {pps}",
-        )
+    wm.yurameki_points_per_strand = pps
 
     min_distance_m = float(wm.yurameki_root_min_distance) / 1000.0
     repaired = 0
@@ -459,7 +456,7 @@ _PROP_NAMES = (
     "yurameki_gravity", "yurameki_iterations",
     "yurameki_collision_margin", "yurameki_collision_search",
     "yurameki_root_min_distance", "yurameki_hair_check_ok",
-    "yurameki_hair_check_status",
+    "yurameki_hair_check_status", "yurameki_points_per_strand",
     "yurameki_bending_enabled", "yurameki_root_bending_ke", "yurameki_bending_ke",
 )
 
@@ -566,6 +563,9 @@ def register():
             name="Hair Check OK", default=False, options={"SKIP_SAVE"})
         WindowManager.yurameki_hair_check_status = StringProperty(
             name="Hair Check", default="Hair not checked", options={"SKIP_SAVE"})
+        WindowManager.yurameki_points_per_strand = IntProperty(
+            name="Points Per Strand", default=9, min=3, max=256,
+            options={"SKIP_SAVE"})
         WindowManager.yurameki_bending_enabled = BoolProperty(
             name="Bending", default=bool(defaults["BENDING_ENABLED"]),
             options={"SKIP_SAVE"})

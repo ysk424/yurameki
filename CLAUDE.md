@@ -318,6 +318,8 @@ blender_manifest.toml — 拡張 manifest と配布対象
 
 - v0.2.1 CUDA version は CUDA/Warp 専用。CPU/Vulkan/Taichi fallback と
   Python Clean up / Condition Groom は削除済み。
+- v0.3.0 は同一Curves内の全strandが同じpoints数なら可変points-per-strand。
+  `Check Hair` で検出した値を `_world_passthrough` と `_recording` に流す。
 - POINTS_PER_STRAND は `_recording.py` と `_world_passthrough.py` で一致必須。
 - Body BVH はワールド座標で構築（CC Body は world scale 0.01）。
 

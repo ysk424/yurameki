@@ -45,6 +45,7 @@ class YURAMEKI_PT_main(Panel):
         if status:
             icon = "CHECKMARK" if getattr(wm, "yurameki_hair_check_ok", False) else "ERROR"
             col.label(text=status, icon=icon)
+        col.prop(wm, "yurameki_points_per_strand")
 
         # Static styling on the current frame
         box = layout.box()

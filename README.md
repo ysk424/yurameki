@@ -21,6 +21,8 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.3.0: strandごとの点数固定を解除しました。同一Curves内の全strandが
+  同じpoints数なら、9 points以外でもシミュレーションできます。
 - v0.2.1 CUDA version: CUDA/Warp 専用化。CPU / Vulkan / Taichi fallback と
   Python Clean up / Condition Groom UI を削除しました。
 - v0.1.10: Clean 2 now selects strands by total bend angle over all internal
@@ -47,10 +49,11 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 
 ## 入力ヘアの制約 / Input hair requirements
 
-- 現在のYuramekiは **1本の毛 = 9 points = 8 segments 固定** です。
-- 可変関節数のCurveにはまだ対応していません。
-- Curves object の総ポイント数は `9` で割り切れる必要があります。
-- 各strandは `p0` がroot、`p1` がroot anchor、`p2..p8` が自由点として扱われます。
+- Yurameki v0.3.0 supports variable points per strand.
+- All strands in one Curves object must have the same point count.
+- The minimum supported count is `3 points per strand`.
+- Each strand uses `p0` as the root, `p1` as the root anchor, and `p2..tip`
+  as free points.
 - `Check Hair` verifies these conditions before simulation. `Simulate` and
   `Simulate Range` also run the same check and stop with a warning if it fails.
 - `Root Min Distance mm` separates roots that are too close by moving the whole
