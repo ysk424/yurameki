@@ -17,6 +17,8 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.1.10: Clean 2 now selects strands by total bend angle over all internal
+  joints, and Clean 3 adds an aggressive even/odd strand-number smoothing pass.
 - v0.1.9: CUDA/Warp collision meshes are reused during range bake; animated
   Body/Cloth evaluated vertices are updated per subframe and the mesh BVH is
   refit instead of rebuilt.
@@ -101,30 +103,35 @@ root, preferably as an inverse-distance weighted blend of the nearest 2-4 valid
 neighbours. Keep the broken strand root fixed and blend the result by a user
 strength value.
 
-Clean 2 is the tail-bend repair. A strand is selected when at least
-one tail bend angle at `p5`, `p6`, or `p7` is `>= 0.5` radians, where a bend
-angle is:
+Clean 2 is the aggressive long-straight-hair repair. A strand is selected when
+the sum of all internal bend angles at `p1..p7` is greater than `210` degrees,
+where each bend angle is:
 
 ```text
 angle(pJ) = acos(dot(normalize(pJ - pJ-1), normalize(pJ+1 - pJ)))
 ```
 
-Straight continuation is `0` radians. The default threshold is `0.5` radians
-(about 28.65 degrees). Once selected, the repair is the same root-preserving
-neighbour interpolation used by Clean 1: find valid nearby UV-neighbour strands,
-blend the nearest 2-4 valid root-relative curves, and rebuild `p1..p8` through
-the tip while keeping `p0` fixed. In the current frame-123 MCP test, Clean 2
-selected 151 strands, repaired all 151, and reduced the selected tail-bend
-maximum below `0.5` radians.
+Straight continuation is `0` radians. The default total threshold is
+`210` degrees (`3.665191429` radians), or an average of `30` degrees over the
+seven internal joints of a 9-point strand. Once selected, the repair is the
+same root-preserving neighbour interpolation used by Clean 1: find valid nearby
+UV-neighbour strands, blend the nearest 2-4 valid root-relative curves, and
+rebuild `p1..p8` through the tip while keeping `p0` fixed. This is intentionally
+strong and intended for long straight hair.
+
+Clean 3 is an even stronger smoothing pass for baked cache frames. It treats the
+first and last strand numbers as fixed boundaries. First it rewrites every even
+interior strand number, then every odd interior strand number. Each rewritten
+strand gets all points `p0..p8` from the midpoint of the previous and next
+strand numbers. This intentionally moves roots as well as tips, and is meant as
+a user-triggered seasoning pass rather than an always-on simulation rule.
 
 Clean repairs must verify the evaluated Curves result after writing. A single
 write to the original Curves datablock may not survive the Deform Curves on
 Surface / Surface Deform round-trip for large shape changes. The practical
 writeback path is iterative: write the desired evaluated world curve using the
 current evaluated-original offset, update the depsgraph, re-read the evaluated
-curve, then repeat until the measured tail-bend/error threshold is satisfied.
-In the frame-123 Clean-2 test, one-shot writeback left visible failures, while
-iterative writeback reached zero `p5..p7 >= 0.5 rad` strands after 7 iterations.
+curve, then repeat until the measured error threshold is satisfied.
 
 The Empty is only an expensive interactive label, not the final detection
 method. It can still be used as a root-finder/debug probe: given an Empty or

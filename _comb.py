@@ -13,7 +13,7 @@ from . import _world_passthrough as _wp
 
 POINTS_PER_STRAND = 9
 COMB1_THRESHOLD_MM = 20.0
-COMB2_ANGLE_RAD = 0.5
+COMB2_TOTAL_BEND_RAD = math.radians(210.0)
 NEIGHBOUR_SCORE_COUNT = 16
 NEIGHBOUR_POOL_COUNT = 32
 NEIGHBOUR_USE_COUNT = 4
@@ -37,7 +37,7 @@ def _find_curves_obj():
     return objects[0] if len(objects) == 1 else None
 
 
-def _tail_max_angles(positions: np.ndarray) -> np.ndarray:
+def _bend_angles(positions: np.ndarray) -> np.ndarray:
     points = positions.reshape((-1, POINTS_PER_STRAND, 3)).astype(
         np.float64, copy=False
     )
@@ -51,8 +51,11 @@ def _tail_max_angles(positions: np.ndarray) -> np.ndarray:
             axis=1,
         )
         bends.append(np.arccos(np.clip(dot, -1.0, 1.0)))
-    bend_array = np.stack(bends, axis=1)
-    return bend_array[:, [4, 5, 6]].max(axis=1)
+    return np.stack(bends, axis=1)
+
+
+def _total_bend_angles(positions: np.ndarray) -> np.ndarray:
+    return _bend_angles(positions).sum(axis=1)
 
 
 def _basis_and_neighbours(obj, n_strands: int) -> tuple[np.ndarray, np.ndarray]:
@@ -128,6 +131,36 @@ def _repair_positions(
         out_vel.reshape(velocities.shape).astype(np.float32),
         repaired,
         skipped,
+    )
+
+
+def _cleanup3_positions(
+    positions: np.ndarray,
+    velocities: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    points = positions.reshape((-1, POINTS_PER_STRAND, 3)).astype(
+        np.float64, copy=True
+    )
+    out = points.copy()
+    out_vel = velocities.reshape((-1, POINTS_PER_STRAND, 3)).copy()
+    n_strands = len(points)
+    if n_strands < 3:
+        return positions, velocities, 0, n_strands
+
+    repaired_indices = set()
+    for parity in (0, 1):
+        for strand in range(1, n_strands - 1):
+            if strand % 2 != parity:
+                continue
+            out[strand, :, :] = 0.5 * (out[strand - 1, :, :] + out[strand + 1, :, :])
+            out_vel[strand, :, :] = 0.0
+            repaired_indices.add(strand)
+
+    return (
+        out.reshape(positions.shape).astype(np.float32),
+        out_vel.reshape(velocities.shape).astype(np.float32),
+        len(repaired_indices),
+        0,
     )
 
 
@@ -301,13 +334,98 @@ def _cleanup_range(start: int, end: int, make_bad_mask) -> CombResult:
     )
 
 
+def _cleanup3_cached_frame(obj, frame: int, display: bool) -> CombResult:
+    manager = _recording.manager
+    frame = int(frame)
+    cached = manager.frames.get(frame)
+    if cached is None:
+        return CombResult(False, f"No baked cache for frame {frame}")
+
+    positions = cached[0].astype(np.float32, copy=True)
+    velocities = cached[1].astype(np.float32, copy=True)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        return CombResult(False, "Invalid baked position cache")
+    if len(positions) % POINTS_PER_STRAND:
+        return CombResult(False, "Point count is not divisible by strand size")
+
+    n_strands = len(positions) // POINTS_PER_STRAND
+    fixed_positions, fixed_velocities, repaired, skipped = _cleanup3_positions(
+        positions, velocities
+    )
+    manager.frames[frame] = (fixed_positions, fixed_velocities)
+    manager.dirty = True
+    passes, residual = (
+        _display_cached_frame_iterative(obj, frame) if display else (0, 0.0)
+    )
+    return CombResult(
+        True,
+        (
+            f"Frame {frame}: selected {max(n_strands - 2, 0)}, "
+            f"repaired {repaired}, skipped {skipped}"
+        ),
+        selected=max(n_strands - 2, 0),
+        repaired=repaired,
+        skipped=skipped,
+        display_passes=passes,
+        display_residual_mm=residual,
+    )
+
+
+def _cleanup3_range(start: int, end: int) -> CombResult:
+    if end < start:
+        return CombResult(False, f"End frame {end} is before start frame {start}")
+    obj = _find_curves_obj()
+    if obj is None:
+        return CombResult(False, "Need exactly one Curves object")
+
+    total_selected = 0
+    total_repaired = 0
+    total_skipped = 0
+    missing = []
+    any_cached = False
+    for frame in range(int(start), int(end) + 1):
+        if frame not in _recording.manager.frames:
+            missing.append(frame)
+            continue
+        any_cached = True
+        result = _cleanup3_cached_frame(obj, frame, False)
+        if not result.ok:
+            return result
+        total_selected += result.selected
+        total_repaired += result.repaired
+        total_skipped += result.skipped
+
+    if not any_cached:
+        return CombResult(False, f"No baked cache frames in {int(start)}-{int(end)}")
+
+    current_frame = int(bpy.context.scene.frame_current)
+    passes = 0
+    residual = 0.0
+    if current_frame in _recording.manager.frames:
+        passes, residual = _display_cached_frame_iterative(obj, current_frame)
+
+    suffix = "" if not missing else f"; skipped {len(missing)} missing frames"
+    return CombResult(
+        True,
+        (
+            f"Frames {int(start)}-{int(end)}: selected {total_selected}, "
+            f"repaired {total_repaired}, skipped {total_skipped}{suffix}"
+        ),
+        selected=total_selected,
+        repaired=total_repaired,
+        skipped=total_skipped + len(missing),
+        display_passes=passes,
+        display_residual_mm=residual,
+    )
+
+
 def _cleanup1_bad_mask(positions, neighbours):
     scores = _comb1_scores(positions, neighbours)
     return scores > COMB1_THRESHOLD_MM
 
 
 def _cleanup2_bad_mask(positions, _neighbours):
-    return _tail_max_angles(positions) >= COMB2_ANGLE_RAD
+    return _total_bend_angles(positions) > COMB2_TOTAL_BEND_RAD
 
 
 def cleanup_1_current_frame() -> CombResult:
@@ -327,11 +445,14 @@ def cleanup_2_range(start: int, end: int) -> CombResult:
 
 
 def cleanup_3_current_frame() -> CombResult:
-    return CombResult(False, "Clean 3 is not implemented yet")
+    obj = _find_curves_obj()
+    if obj is None:
+        return CombResult(False, "Need exactly one Curves object")
+    return _cleanup3_cached_frame(obj, int(bpy.context.scene.frame_current), True)
 
 
-def cleanup_3_range(_start: int, _end: int) -> CombResult:
-    return CombResult(False, "Clean 3 is not implemented yet")
+def cleanup_3_range(start: int, end: int) -> CombResult:
+    return _cleanup3_range(start, end)
 
 
 def comb_1_current_frame() -> CombResult:
@@ -344,10 +465,10 @@ def comb_1_current_frame() -> CombResult:
 
 def comb_2_current_frame() -> CombResult:
     def make_bad_mask(positions, _neighbours):
-        return _tail_max_angles(positions) >= COMB2_ANGLE_RAD
+        return _total_bend_angles(positions) > COMB2_TOTAL_BEND_RAD
 
     return _cleanup_current_frame(make_bad_mask)
 
 
 def comb_3_current_frame() -> CombResult:
-    return CombResult(False, "Clean 3 is not implemented yet")
+    return cleanup_3_current_frame()
