@@ -38,11 +38,20 @@ ANGLE_LIMIT_ENABLED    = True
 ANGLE_LIMIT_RAD        = 1.0
 ANGLE_LIMIT_KE         = 1.0e6
 BODY_COLLISION_TARGET  = 'CC_Base_Body'
+CLOTH_COLLISION_TARGET = ''
 COMPUTE_BACKEND        = 'CUDA'
 COLLISION_MARGIN       = 0.0005
 COLLISION_SEARCH       = 0.003
 POST_COLLISION_ITERATIONS = 4
 ROOT_OFFSET            = 0.001
+
+
+def collision_target_names():
+    names = [BODY_COLLISION_TARGET]
+    cloth = str(CLOTH_COLLISION_TARGET).strip()
+    if cloth:
+        names.append(cloth)
+    return names
 
 
 def _body_bvh(body_name):
@@ -244,7 +253,7 @@ def run_simulation(curves_obj_name: str, n_steps: int,
         try:
             from ._collision_warp import WarpBodyCollider
             warp_collision = WarpBodyCollider(
-                body_name=BODY_COLLISION_TARGET,
+                collider_names=collision_target_names(),
                 n_total=n_total,
                 points_per_strand=POINTS_PER_STRAND,
                 margin=COLLISION_MARGIN,
@@ -262,6 +271,11 @@ def run_simulation(curves_obj_name: str, n_steps: int,
             )
             print('[yurameki/sim] Warp CUDA shared-state solver enabled')
         except Exception as exc:
+            if CLOTH_COLLISION_TARGET.strip():
+                return (
+                    'ERROR: Warp collision unavailable with Cloth Collider: '
+                    f'{exc!r}'
+                )
             print(
                 '[yurameki/sim] Warp collision unavailable; '
                 f'using Python BVH: {exc!r}'

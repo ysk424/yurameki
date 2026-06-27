@@ -116,6 +116,13 @@ class RecordingManager:
         body = bpy.data.objects.get(body_name)
         if body is None or body.type != "MESH":
             return False, "Select a Body Mesh first"
+        cloth_name = bpy.context.window_manager.yurameki_cloth_obj.strip()
+        if cloth_name:
+            cloth = bpy.data.objects.get(cloth_name)
+            if cloth is None or cloth.type != "MESH":
+                return False, "Cloth Collider must be a mesh"
+            if bpy.context.window_manager.yurameki_compute_backend != "CUDA":
+                return False, "Cloth Collider requires CUDA"
 
         attr = obj.data.attributes.get("position")
         if attr is None or len(attr.data) == 0:
@@ -441,13 +448,19 @@ class RecordingManager:
                 try:
                     from ._collision_warp import WarpBodyCollider
                     collision = WarpBodyCollider(
-                        body_name=wm.yurameki_body_obj.strip(),
+                        collider_names=_wp.collision_target_names(),
                         n_total=self.n_total,
                         points_per_strand=POINTS_PER_STRAND,
                         margin=_wp.COLLISION_MARGIN,
                         search_distance=_wp.COLLISION_SEARCH,
                     )
                 except Exception as exc:
+                    if _wp.CLOTH_COLLISION_TARGET.strip():
+                        print(
+                            "[yurameki/record] Warp collision unavailable "
+                            f"with Cloth Collider: {exc!r}"
+                        )
+                        return False
                     print(
                         "[yurameki/record] Warp collision unavailable; "
                         f"using Python BVH: {exc!r}"

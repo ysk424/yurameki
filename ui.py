@@ -35,6 +35,9 @@ class YURAMEKI_PT_main(Panel):
         row = col.row(align=True)
         row.prop(wm, "yurameki_body_obj", text="Body")
         row.operator("yurameki.pick_body", text="", icon="EYEDROPPER")
+        row = col.row(align=True)
+        row.prop(wm, "yurameki_cloth_obj", text="Cloth")
+        row.operator("yurameki.pick_cloth", text="", icon="EYEDROPPER")
         col.prop(wm, "yurameki_compute_backend")
         col.operator("yurameki.condition_groom", icon="MOD_PHYSICS")
 

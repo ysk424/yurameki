@@ -34,6 +34,8 @@ def _snapshot_sim_params(wm):
     _wp.ROOT_BENDING_KE = 10.0 ** wm.yurameki_root_bending_ke
     _wp.BENDING_KE      = 10.0 ** wm.yurameki_bending_ke
     _wp.COMPUTE_BACKEND = wm.yurameki_compute_backend
+    _wp.BODY_COLLISION_TARGET = wm.yurameki_body_obj.strip()
+    _wp.CLOTH_COLLISION_TARGET = wm.yurameki_cloth_obj.strip()
 
 
 def _find_curves_obj():
@@ -75,6 +77,15 @@ class YURAMEKI_OT_simulate(Operator):
         body = bpy.data.objects.get(body_name)
         if body is None or body.type != "MESH":
             self.report({"ERROR"}, "Select a Body Mesh first"); return {"CANCELLED"}
+        cloth_name = wm.yurameki_cloth_obj.strip()
+        if cloth_name:
+            cloth = bpy.data.objects.get(cloth_name)
+            if cloth is None or cloth.type != "MESH":
+                self.report({"ERROR"}, "Cloth Collider must be a mesh")
+                return {"CANCELLED"}
+            if wm.yurameki_compute_backend != "CUDA":
+                self.report({"ERROR"}, "Cloth Collider requires CUDA")
+                return {"CANCELLED"}
         _wp.BODY_COLLISION_TARGET = body.name
         status = _wp.run_simulation(
             obj.name, wm.yurameki_simulation_steps, context.scene
@@ -252,6 +263,15 @@ class YURAMEKI_OT_bake_range(_BusyOperatorMixin, Operator):
         body = bpy.data.objects.get(wm.yurameki_body_obj.strip())
         if body is None or body.type != "MESH":
             self.report({"ERROR"}, "Select a Body Mesh first"); return {"CANCELLED"}
+        cloth_name = wm.yurameki_cloth_obj.strip()
+        if cloth_name:
+            cloth = bpy.data.objects.get(cloth_name)
+            if cloth is None or cloth.type != "MESH":
+                self.report({"ERROR"}, "Cloth Collider must be a mesh")
+                return {"CANCELLED"}
+            if wm.yurameki_compute_backend != "CUDA":
+                self.report({"ERROR"}, "Cloth Collider requires CUDA")
+                return {"CANCELLED"}
         _snapshot_sim_params(wm)
         from . import _recording
         ok, message = _recording.manager.bake_range(
@@ -318,6 +338,20 @@ class YURAMEKI_OT_pick_body(Operator):
         return {"FINISHED"}
 
 
+class YURAMEKI_OT_pick_cloth(Operator):
+    bl_idname = "yurameki.pick_cloth"
+    bl_label = "Pick Active as Cloth Collider"
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"WARNING"}, "Active object must be a mesh")
+            return {"CANCELLED"}
+        context.window_manager.yurameki_cloth_obj = obj.name
+        self.report({"INFO"}, f"Cloth Collider: {obj.name!r}")
+        return {"FINISHED"}
+
+
 _classes = (
     YURAMEKI_OT_simulate,
     YURAMEKI_OT_condition_groom,
@@ -329,6 +363,7 @@ _classes = (
     YURAMEKI_OT_use_scene_range,
     YURAMEKI_OT_export_alembic,
     YURAMEKI_OT_pick_body,
+    YURAMEKI_OT_pick_cloth,
 )
 
 
@@ -379,6 +414,7 @@ _PROP_NAMES = (
     "yurameki_auto_frame_interpolation", "yurameki_auto_interpolation_current",
     "yurameki_interpolation_mag", "yurameki_record_mode",
     "yurameki_compute_backend", "yurameki_body_obj",
+    "yurameki_cloth_obj",
     "yurameki_bake_start", "yurameki_bake_end", "yurameki_export_path",
     "yurameki_bake_running", "yurameki_cleanup_running",
     "yurameki_spring_ke", "yurameki_damping", "yurameki_particle_mass",
@@ -452,6 +488,10 @@ def register():
         )
         WindowManager.yurameki_body_obj = StringProperty(
             name="Body Mesh", description="Animated surface and collision mesh",
+            default="", options={"SKIP_SAVE"})
+        WindowManager.yurameki_cloth_obj = StringProperty(
+            name="Cloth Collider",
+            description="Optional animated Alembic mesh used only for collision",
             default="", options={"SKIP_SAVE"})
         WindowManager.yurameki_bake_start = IntProperty(
             name="Start", description="First frame to simulate",

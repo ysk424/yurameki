@@ -140,11 +140,11 @@ def _segment_collision(
             velocities[j] = velocity - ray.normal * normal_speed
 
 
-def _evaluated_body_arrays(body_name: str):
+def _evaluated_mesh_arrays(mesh_name: str):
     import bpy
-    body = bpy.data.objects.get(body_name)
+    body = bpy.data.objects.get(mesh_name)
     if body is None or body.type != "MESH":
-        raise ValueError(f"Body mesh {body_name!r} not found")
+        raise ValueError(f"Collision mesh {mesh_name!r} not found")
     depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = body.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
@@ -169,6 +169,28 @@ def _evaluated_body_arrays(body_name: str):
         evaluated.to_mesh_clear()
 
 
+def _evaluated_collision_arrays(mesh_names):
+    names = [name for name in mesh_names if name]
+    if not names:
+        raise ValueError("No collision meshes selected")
+    vertex_parts = []
+    index_parts = []
+    vertex_offset = 0
+    for name in names:
+        vertices, indices = _evaluated_mesh_arrays(name)
+        vertex_parts.append(vertices)
+        index_parts.append(indices.reshape(-1) + vertex_offset)
+        vertex_offset += len(vertices)
+    return (
+        np.ascontiguousarray(np.concatenate(vertex_parts, axis=0), dtype=np.float32),
+        np.ascontiguousarray(np.concatenate(index_parts, axis=0), dtype=np.int32),
+    )
+
+
+def _evaluated_body_arrays(body_name: str):
+    return _evaluated_collision_arrays([body_name])
+
+
 class WarpBodyCollider:
     def __init__(
         self,
@@ -177,6 +199,7 @@ class WarpBodyCollider:
         margin: float,
         search_distance: float,
         body_name: str = None,
+        collider_names=None,
         triangles=None,
     ):
         if not wp.is_cuda_available():
@@ -194,6 +217,8 @@ class WarpBodyCollider:
             vertices, indices = triangles
             vertices = np.ascontiguousarray(vertices, dtype=np.float32)
             indices = np.ascontiguousarray(indices, dtype=np.int32).reshape(-1)
+        elif collider_names is not None:
+            vertices, indices = _evaluated_collision_arrays(collider_names)
         else:
             vertices, indices = _evaluated_body_arrays(body_name)
         self.points = wp.array(vertices, dtype=wp.vec3, device=self.device)

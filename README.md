@@ -16,6 +16,9 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.1.8: optional `Cloth` collider picker. The selected mesh is read as an
+  evaluated mesh each subframe, so Alembic geometry-cache deformation is used
+  for CUDA/Warp collision together with the Body mesh.
 - v0.1.7: `Comb` を `Clean` に改名し、Clean 1 / Clean 2 を Start-End のベイク範囲へ適用するようにしました。RECボタンは削除し、`Simulate Range` が録画開始を兼ねます。
 - v0.1.6: ベイク済みの現在フレームに対する修復ボタンを追加しました。
 - v0.1.5: Warp CUDA 経路に rest pose からの角度LIMITを追加しました。
@@ -35,6 +38,7 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 
 1. シーンに Hair Curves オブジェクトを1つ用意します（Tokoya で植毛したものなど）。
 2. `Body` にアニメーション追従兼コライダーの Mesh を設定します。
+   必要なら `Cloth` に Alembic geometry-cache Mesh を設定します。
 3. 必要なら `Simulate` で現在フレームの形を整えます。
 4. `Bake & Export` で Start / End を指定（`Use Scene Range` でシーン範囲を流用）。
 5. `Simulate Range` でレンジ全体を計算し、各フレームをキャッシュします。
