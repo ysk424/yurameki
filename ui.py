@@ -38,8 +38,6 @@ class YURAMEKI_PT_main(Panel):
         row = col.row(align=True)
         row.prop(wm, "yurameki_cloth_obj", text="Cloth")
         row.operator("yurameki.pick_cloth", text="", icon="EYEDROPPER")
-        col.prop(wm, "yurameki_compute_backend")
-        col.operator("yurameki.condition_groom", icon="MOD_PHYSICS")
 
         # Static styling on the current frame
         box = layout.box()
@@ -47,11 +45,6 @@ class YURAMEKI_PT_main(Panel):
         col = box.column(align=True)
         col.prop(wm, "yurameki_simulation_steps")
         col.operator("yurameki.simulate", icon="PLAY")
-        row = col.row(align=True)
-        row.alert = getattr(wm, "yurameki_cleanup_running", False)
-        row.operator("yurameki.cleanup_1", text="Clean 1", icon="BRUSH_DATA")
-        row.operator("yurameki.cleanup_2", text="Clean 2", icon="BRUSH_DATA")
-        row.operator("yurameki.cleanup_3", text="Clean 3", icon="BRUSH_DATA")
 
         # Range bake + export
         box = layout.box()
@@ -94,6 +87,8 @@ class YURAMEKI_PT_main(Panel):
         col.separator()
         col.prop(wm, "yurameki_iterations")
         col.prop(wm, "yurameki_interpolation_mag")
+        col.prop(wm, "yurameki_collision_margin")
+        col.prop(wm, "yurameki_collision_search")
         col.separator()
         col.prop(wm, "yurameki_bending_enabled")
         if getattr(wm, "yurameki_bending_enabled", False):

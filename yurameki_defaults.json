@@ -11,5 +11,7 @@
     "ANGLE_LIMIT_ENABLED":    true,
     "ANGLE_LIMIT_RAD":        1.0,
     "ANGLE_LIMIT_KE":         1000000.0,
+    "COLLISION_MARGIN":       0.0005,
+    "COLLISION_SEARCH":       0.003,
     "BODY_COLLISION_TARGET": "CC_Base_Body"
 }

@@ -1,7 +1,7 @@
 """Headless hair simulation engine — Blender-independent.
 
 Drives the kinematic hair roots by the head bone's world motion (validated
-rigid-follow model) and runs the Taichi XPBD solver from the yurameki
+rigid-follow model) and runs the Warp CUDA XPBD solver from the yurameki
 extension. No bpy. Collision is optional and OFF in this first milestone
 (body_collision_fn=None); the head-driven gravity/spring sim runs end to end.
 
@@ -42,7 +42,7 @@ def default_params(root: str = _ROOT) -> dict:
         "fps": 24.0,
         "fps_base": 1.0,
         "pps": 9,
-        "backend": "CPU",
+        "backend": "CUDA",
     }
 
 
@@ -52,19 +52,15 @@ def _apply(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
 
 
 def _make_solver(params, n_total, n_strands, groom_rest):
-    """CUDA -> Warp solver (production path); CPU/VULKAN -> Taichi."""
-    backend = params["backend"].upper()
+    """Create the Warp CUDA solver."""
     kwargs = dict(
         n_total=n_total, n_strands=n_strands, pps=int(params["pps"]),
         init_pos=groom_rest.astype(np.float32),
         particle_mass=params["mass"],
         bending_enabled=params["bending_enabled"],
     )
-    if backend == "CUDA":
-        from _sim_warp import WarpXPBDSolver
-        return WarpXPBDSolver(**kwargs)
-    from _sim_taichi import get_solver_class
-    return get_solver_class(backend)(**kwargs)
+    from _sim_warp import WarpXPBDSolver
+    return WarpXPBDSolver(**kwargs)
 
 
 def simulate(groom_rest, head_world, params, progress=None,
@@ -192,7 +188,7 @@ if __name__ == "__main__":
     ap.add_argument("--out", default=os.path.join(_ROOT, "testdata", "hair_sim.npz"))
     ap.add_argument("--start", type=int, default=None)
     ap.add_argument("--end", type=int, default=None)
-    ap.add_argument("--backend", default="CPU", choices=["CPU", "CUDA", "VULKAN"])
+    ap.add_argument("--backend", default="CUDA", choices=["CUDA"])
     ap.add_argument("--collision", action="store_true",
                     help="enable body collision (requires CUDA backend)")
     ap.add_argument("--substeps", type=int, default=None)

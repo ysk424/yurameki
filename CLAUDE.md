@@ -177,9 +177,8 @@ transforms, STOP and rethink — don't thrash (that burns tokens).
 
 3. **Headless engine + server:**
    - `engine.py` — drives kinematic roots by the head-follow transform, runs the
-     extension's **Taichi (CPU)** solver with `body_collision_fn=None`. Imports
-     `_sim_taichi` (its only bpy use is lazy inside `build_body_bvh`). Full
-     450-frame clip: finite, **8 s on CPU**.
+     extension's **Warp CUDA** solver. v0.2.1 removes the Taichi/CPU fallback
+     path so CUDA failures are explicit instead of silently changing solvers.
    - `app.py` — TCP JSON-RPC `127.0.0.1:7780` (ping/simulate/shutdown), tanabata
      pattern. `cli.py` — client. Tested from **CLI and Blender MCP** (Blender as
      a thin client). Hair sim runs fully outside Blender.
@@ -189,10 +188,10 @@ transforms, STOP and rethink — don't thrash (that burns tokens).
 Policy: install BPY's pip packages into the bare Python 3.13 so PY mirrors BPY.
 Blender 5.1 BPY = Python 3.13.9, **warp-lang 1.13.0** (bundled, CUDA 12.9,
 RTX 5070 Ti sm_120), numpy 2.3.4, NO taichi. Production ran the **Warp CUDA**
-path (`_sim_warp` + `_collision_warp`); taichi was only the CPU fallback.
+path (`_sim_warp` + `_collision_warp`). v0.2.1 deletes the Taichi fallback.
 - Installed `warp-lang==1.13.0` into bare Python → CUDA works headless.
-- `engine.py` now selects Warp for backend CUDA, Taichi for CPU/VULKAN.
-- Cross-check: `--backend CUDA` vs CPU agree to **0.12 mm max** (120 frames).
+- `engine.py` is CUDA/Warp-only.
+- Old cross-check: `--backend CUDA` vs CPU agreed to **0.12 mm max** (120 frames).
 - `server/requirements.txt` pins the env.
 
 ### Headless body collision — DONE & VALIDATED (2026-06-23)
@@ -271,7 +270,6 @@ Tokoya は引き続き公開・維持する。Yurameki はそこからスピン�
 ### 構成（Tokoya から引き継いだ核）
 
 ```
-_sim_taichi.py        — Taichi XPBD ソルバー、可変9点ストランド
 _sim_warp.py          — Warp CUDA 共有状態ソルバー
 _collision_warp.py    — Warp CUDA Body 衝突バッチ処理
 _world_passthrough.py — 現在フレームの静的 Simulate と Body 衝突
@@ -291,7 +289,7 @@ blender_manifest.toml — 拡張 manifest と配布対象
   タイムライン再生で baked モーションがそのまま再生される。
 - POINTS_PER_STRAND=9 固定。CACHE_SUFFIX は `.yurameki-cache.npz`。
 
-### Operators（6個）
+### Operators（7個）
 
 | bl_idname | 役割 |
 |---|---|
@@ -301,6 +299,7 @@ blender_manifest.toml — 拡張 manifest と配布対象
 | `yurameki.record` | タイムライン REC トグル |
 | `yurameki.export_alembic` | **スタブ**（未実装） |
 | `yurameki.pick_body` | Active を Body に設定 |
+| `yurameki.pick_cloth` | Active を Cloth に設定 |
 
 ### 配布物
 
@@ -317,11 +316,8 @@ blender_manifest.toml — 拡張 manifest と配布対象
 
 ### Tokoya 由来の地雷（引き継ぎ）
 
-- `from __future__ import annotations` は `@ti.kernel` の型注釈を壊す
-  （PEP 563）。**ただし `_sim_taichi.py` 内のカーネル定義に対してのみ**。
-  他ファイルの `from __future__` は問題ない。
-- `@ti.kernel` 引数はスカラーのみ。ndarray は from_numpy/to_numpy 経由。
-- Taichi のキャッシュ更新はアンインストール→再インストールが確実。
+- v0.2.1 CUDA version は CUDA/Warp 専用。CPU/Vulkan/Taichi fallback と
+  Python Clean up / Condition Groom は削除済み。
 - POINTS_PER_STRAND は `_recording.py` と `_world_passthrough.py` で一致必須。
 - Body BVH はワールド座標で構築（CC Body は world scale 0.01）。
 

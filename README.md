@@ -14,13 +14,15 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 
 ## 主な機能
 
-- Taichi XPBD ソルバー（CUDA 既定 / Vulkan / CPU）
-- NVIDIA Warp による CUDA Body 衝突のバッチ処理
+- NVIDIA Warp による CUDA XPBD ソルバー
+- NVIDIA Warp による CUDA Body / Cloth 衝突のバッチ処理
 - 現在フレームの静的整髪（`Simulate`）
 - **指定レンジの一括シミュレーション（`Simulate Range`）**
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
+- v0.2.1 CUDA version: CUDA/Warp 専用化。CPU / Vulkan / Taichi fallback と
+  Python Clean up / Condition Groom UI を削除しました。
 - v0.1.10: Clean 2 now selects strands by total bend angle over all internal
   joints, and Clean 3 adds an aggressive even/odd strand-number smoothing pass.
 - v0.1.9: CUDA/Warp collision meshes are reused during range bake; animated
@@ -40,9 +42,15 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 ## 必要環境
 
 - Blender 5.1以降 / Windows x64
-- Python パッケージ `taichi`（Blender の Python 3.13 が参照する user site-packages へ）
 - NVIDIA Warp（Blender 5.1 同梱版）
-- CUDA 利用時は対応する NVIDIA GPU とドライバー
+- 対応する NVIDIA GPU とドライバー
+
+## 入力ヘアの制約 / Input hair requirements
+
+- 現在のYuramekiは **1本の毛 = 9 points = 8 segments 固定** です。
+- 可変関節数のCurveにはまだ対応していません。
+- Curves object の総ポイント数は `9` で割り切れる必要があります。
+- 各strandは `p0` がroot、`p1` がroot anchor、`p2..p8` が自由点として扱われます。
 
 ## 基本操作
 
@@ -52,8 +60,7 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 3. 必要なら `Simulate` で現在フレームの形を整えます。
 4. `Bake & Export` で Start / End を指定（`Use Scene Range` でシーン範囲を流用）。
 5. `Simulate Range` でレンジ全体を計算し、各フレームをキャッシュします。
-6. 必要なら `Clean 1` / `Clean 2` を押して、Start / End のキャッシュ範囲を修復します。
-7. タイムラインを再生すると、ベイク結果が再生されます。
+6. タイムラインを再生すると、ベイク結果が再生されます。
 
 ## Alembic 書き出し
 
@@ -73,12 +80,24 @@ after the existing segment and bending springs. It is intentionally a single
 global value for now, so the effect of the angle limit can be evaluated before
 adding UI controls or per-point/texture-style maps.
 
-## Clean repair notes
+## Collision tuning
 
-The UI name is `Clean`; the original working name was `Comb`. `Clean 1` and
-`Clean 2` operate on the baked cache for the configured Start-End range. The
-current frame display is refreshed after the range cache is repaired. `Clean 3`
-is still a reserved button.
+The Physics panel exposes two collision controls in millimeters:
+
+- `Collision Radius mm`: the surface clearance used when pushing hair outside
+  the collider. The default is `0.5 mm`.
+- `Collision Search mm`: the nearest-surface search distance used by Warp mesh
+  collision. The default is `3.0 mm`.
+
+Larger values can reduce visible penetration, but may also make the hair look
+slightly more inflated around the scalp or clothing.
+
+## Clean repair notes (v0.1 archived)
+
+The v0.1 UI name was `Clean`; the original working name was `Comb`. These
+Python/Numpy repair buttons are archived in the v0.1 series. The unstable
+v0.2.0 branch removes them from the active UI so the next solver can stay on
+Warp CUDA.
 
 Clean 1 is the local-neighbour repair. For every strand, build a
 stable neighbour list from `surface_uv_coordinate` using the nearest 16 strand

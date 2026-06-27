@@ -4,7 +4,5 @@
 #
 # warp-lang is the production CUDA path (bundled in Blender 5.1 as 1.13.0).
 warp-lang==1.13.0
-# Taichi is the CPU/Vulkan fallback solver path.
-taichi==1.7.4
 numpy>=2.3
 scipy

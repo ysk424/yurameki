@@ -1,4 +1,4 @@
-"""Yurameki (揺らめき) — Taichi XPBD hair simulation and bake.
+"""Yurameki (揺らめき) — Warp CUDA XPBD hair simulation and bake.
 
 Yurameki is the simulation core extracted from Tokoya. It takes an existing
 Hair Curves object (planted/styled in Tokoya or by hand), simulates it against
@@ -33,7 +33,8 @@ def _snapshot_sim_params(wm):
     _wp.BENDING_ENABLED = wm.yurameki_bending_enabled
     _wp.ROOT_BENDING_KE = 10.0 ** wm.yurameki_root_bending_ke
     _wp.BENDING_KE      = 10.0 ** wm.yurameki_bending_ke
-    _wp.COMPUTE_BACKEND = wm.yurameki_compute_backend
+    _wp.COLLISION_MARGIN = wm.yurameki_collision_margin / 1000.0
+    _wp.COLLISION_SEARCH = wm.yurameki_collision_search / 1000.0
     _wp.BODY_COLLISION_TARGET = wm.yurameki_body_obj.strip()
     _wp.CLOTH_COLLISION_TARGET = wm.yurameki_cloth_obj.strip()
 
@@ -63,7 +64,7 @@ def _sync_bake_range_to_scene():
 class YURAMEKI_OT_simulate(Operator):
     bl_idname      = "yurameki.simulate"
     bl_label       = "Simulate (current frame)"
-    bl_description = "Run N steps of static Taichi XPBD styling on the current frame"
+    bl_description = "Run N steps of static Warp CUDA XPBD styling on the current frame"
 
     def execute(self, context):
         obj = _find_curves_obj()
@@ -83,9 +84,6 @@ class YURAMEKI_OT_simulate(Operator):
             if cloth is None or cloth.type != "MESH":
                 self.report({"ERROR"}, "Cloth Collider must be a mesh")
                 return {"CANCELLED"}
-            if wm.yurameki_compute_backend != "CUDA":
-                self.report({"ERROR"}, "Cloth Collider requires CUDA")
-                return {"CANCELLED"}
         _wp.BODY_COLLISION_TARGET = body.name
         status = _wp.run_simulation(
             obj.name, wm.yurameki_simulation_steps, context.scene
@@ -94,39 +92,6 @@ class YURAMEKI_OT_simulate(Operator):
             self.report({"ERROR"}, status); return {"CANCELLED"}
         _clear_recording_cache()
         self.report({"INFO"}, status)
-        return {"FINISHED"}
-
-
-class YURAMEKI_OT_condition_groom(Operator):
-    bl_idname = "yurameki.condition_groom"
-    bl_label = "Condition Groom"
-    bl_description = (
-        "Move buried / near-surface hair points to Tokoya's 1 mm outside-body "
-        "startup clearance without changing the solver"
-    )
-
-    def execute(self, context):
-        obj = _find_curves_obj()
-        if obj is None:
-            self.report({"ERROR"}, "Need exactly one Curves object"); return {"CANCELLED"}
-        wm = context.window_manager
-        body_name = wm.yurameki_body_obj.strip()
-        body = bpy.data.objects.get(body_name)
-        if body is None or body.type != "MESH":
-            self.report({"ERROR"}, "Select a Body Mesh first"); return {"CANCELLED"}
-        from . import _world_passthrough as _wp
-        eval_w, _orig_w, n_pushed, n_roots = _wp.condition_curve_to_collider(
-            obj, body.name, context.scene, _wp.ROOT_OFFSET, _wp.POINTS_PER_STRAND
-        )
-        if eval_w is None:
-            self.report({"ERROR"}, "Could not read/write Curves positions")
-            return {"CANCELLED"}
-        _clear_recording_cache()
-        self.report(
-            {"INFO"},
-            f"Conditioned {n_pushed} points ({n_roots} root anchors) "
-            f"to {_wp.ROOT_OFFSET * 1000:.2f} mm outside {body.name!r}",
-        )
         return {"FINISHED"}
 
 
@@ -170,63 +135,6 @@ class _BusyOperatorMixin:
             _tag_redraw(context)
 
 
-class YURAMEKI_OT_cleanup_1(_BusyOperatorMixin, Operator):
-    bl_idname = "yurameki.cleanup_1"
-    bl_label = "Clean 1"
-    bl_description = "Clean up baked frames with local-neighbour distance repair"
-    busy_prop = "yurameki_cleanup_running"
-
-    def _execute(self, context):
-        from . import _comb
-        wm = context.window_manager
-        result = _comb.cleanup_1_range(
-            int(wm.yurameki_bake_start),
-            int(wm.yurameki_bake_end),
-        )
-        if not result.ok:
-            self.report({"ERROR"}, result.message)
-            return {"CANCELLED"}
-        self.report({"INFO"}, result.message)
-        return {"FINISHED"}
-
-
-class YURAMEKI_OT_cleanup_2(_BusyOperatorMixin, Operator):
-    bl_idname = "yurameki.cleanup_2"
-    bl_label = "Clean 2"
-    bl_description = "Clean up baked frames with tail-bend repair"
-    busy_prop = "yurameki_cleanup_running"
-
-    def _execute(self, context):
-        from . import _comb
-        wm = context.window_manager
-        result = _comb.cleanup_2_range(
-            int(wm.yurameki_bake_start),
-            int(wm.yurameki_bake_end),
-        )
-        if not result.ok:
-            self.report({"ERROR"}, result.message)
-            return {"CANCELLED"}
-        self.report({"INFO"}, result.message)
-        return {"FINISHED"}
-
-
-class YURAMEKI_OT_cleanup_3(_BusyOperatorMixin, Operator):
-    bl_idname = "yurameki.cleanup_3"
-    bl_label = "Clean 3"
-    bl_description = "Reserved button for Clean 3"
-    busy_prop = "yurameki_cleanup_running"
-
-    def _execute(self, context):
-        from . import _comb
-        wm = context.window_manager
-        result = _comb.cleanup_3_range(
-            int(wm.yurameki_bake_start),
-            int(wm.yurameki_bake_end),
-        )
-        self.report({"WARNING"}, result.message)
-        return {"FINISHED"}
-
-
 class YURAMEKI_OT_record(Operator):
     bl_idname = "yurameki.record"
     bl_label = "REC"
@@ -268,9 +176,6 @@ class YURAMEKI_OT_bake_range(_BusyOperatorMixin, Operator):
             cloth = bpy.data.objects.get(cloth_name)
             if cloth is None or cloth.type != "MESH":
                 self.report({"ERROR"}, "Cloth Collider must be a mesh")
-                return {"CANCELLED"}
-            if wm.yurameki_compute_backend != "CUDA":
-                self.report({"ERROR"}, "Cloth Collider requires CUDA")
                 return {"CANCELLED"}
         _snapshot_sim_params(wm)
         from . import _recording
@@ -354,10 +259,6 @@ class YURAMEKI_OT_pick_cloth(Operator):
 
 _classes = (
     YURAMEKI_OT_simulate,
-    YURAMEKI_OT_condition_groom,
-    YURAMEKI_OT_cleanup_1,
-    YURAMEKI_OT_cleanup_2,
-    YURAMEKI_OT_cleanup_3,
     YURAMEKI_OT_record,
     YURAMEKI_OT_bake_range,
     YURAMEKI_OT_use_scene_range,
@@ -413,12 +314,13 @@ _PROP_NAMES = (
     "yurameki_simulation_steps", "yurameki_frame_interpolation",
     "yurameki_auto_frame_interpolation", "yurameki_auto_interpolation_current",
     "yurameki_interpolation_mag", "yurameki_record_mode",
-    "yurameki_compute_backend", "yurameki_body_obj",
+    "yurameki_body_obj",
     "yurameki_cloth_obj",
     "yurameki_bake_start", "yurameki_bake_end", "yurameki_export_path",
-    "yurameki_bake_running", "yurameki_cleanup_running",
+    "yurameki_bake_running",
     "yurameki_spring_ke", "yurameki_damping", "yurameki_particle_mass",
     "yurameki_gravity", "yurameki_iterations",
+    "yurameki_collision_margin", "yurameki_collision_search",
     "yurameki_bending_enabled", "yurameki_root_bending_ke", "yurameki_bending_ke",
 )
 
@@ -475,17 +377,6 @@ def register():
             default="PLAYBACK",
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_compute_backend = EnumProperty(
-            name="Compute",
-            description="Taichi compute backend; changing it rebuilds the solver",
-            items=(
-                ("CUDA", "CUDA", "NVIDIA CUDA"),
-                ("VULKAN", "Vulkan", "Vulkan compute"),
-                ("CPU", "CPU", "CPU backend"),
-            ),
-            default="CUDA",
-            options={"SKIP_SAVE"},
-        )
         WindowManager.yurameki_body_obj = StringProperty(
             name="Body Mesh", description="Animated surface and collision mesh",
             default="", options={"SKIP_SAVE"})
@@ -504,8 +395,6 @@ def register():
             default="//hair.abc", subtype="FILE_PATH", options={"SKIP_SAVE"})
         WindowManager.yurameki_bake_running = BoolProperty(
             name="Bake Running", default=False, options={"SKIP_SAVE"})
-        WindowManager.yurameki_cleanup_running = BoolProperty(
-            name="Clean Running", default=False, options={"SKIP_SAVE"})
         WindowManager.yurameki_spring_ke = FloatProperty(
             name="Stiffness 10^N", default=math.log10(defaults["SPRING_KE"]),
             min=1.0, max=9.0, step=10, precision=2, options={"SKIP_SAVE"})
@@ -522,6 +411,14 @@ def register():
         WindowManager.yurameki_iterations = IntProperty(
             name="Iterations", default=int(defaults["ITERATIONS"]),
             min=1, max=64, options={"SKIP_SAVE"})
+        WindowManager.yurameki_collision_margin = FloatProperty(
+            name="Collision Radius mm",
+            default=float(defaults.get("COLLISION_MARGIN", 0.0005)) * 1000.0,
+            min=0.0, max=20.0, step=10, precision=3, options={"SKIP_SAVE"})
+        WindowManager.yurameki_collision_search = FloatProperty(
+            name="Collision Search mm",
+            default=float(defaults.get("COLLISION_SEARCH", 0.003)) * 1000.0,
+            min=0.1, max=100.0, step=10, precision=3, options={"SKIP_SAVE"})
         WindowManager.yurameki_bending_enabled = BoolProperty(
             name="Bending", default=bool(defaults["BENDING_ENABLED"]),
             options={"SKIP_SAVE"})

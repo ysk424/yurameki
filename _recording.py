@@ -6,7 +6,6 @@ from pathlib import Path
 
 import bpy
 import numpy as np
-from mathutils import Vector
 from mathutils.kdtree import KDTree
 
 from . import _world_passthrough as _wp
@@ -90,7 +89,6 @@ class RecordingManager:
         self.solver = None
         self.collision = None
         self.root_indices: np.ndarray | None = None
-        self.root_mask: np.ndarray | None = None
         self.previous_roots: np.ndarray | None = None
         self.median_root_spacing = 0.001
         self._inside_frame_eval = False
@@ -122,8 +120,6 @@ class RecordingManager:
             cloth = bpy.data.objects.get(cloth_name)
             if cloth is None or cloth.type != "MESH":
                 return False, "Cloth Collider must be a mesh"
-            if bpy.context.window_manager.yurameki_compute_backend != "CUDA":
-                return False, "Cloth Collider requires CUDA"
 
         attr = obj.data.attributes.get("position")
         if attr is None or len(attr.data) == 0:
@@ -136,22 +132,19 @@ class RecordingManager:
             )
 
         frame = int(scene.frame_current)
-        eval_world, orig_world, n_pushed, n_roots = _wp.condition_curve_to_collider(
-            obj, body_name, scene, _wp.ROOT_OFFSET, POINTS_PER_STRAND
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        obj_eval = obj.evaluated_get(depsgraph)
+        eval_world = _wp._read_world(
+            obj_eval.data, n_total, obj_eval.matrix_world
         )
-        if eval_world is None:
+        orig_world = _wp._read_world(
+            obj.data, n_total, obj.matrix_world
+        )
+        if eval_world is None or orig_world is None:
             return False, "Could not read evaluated Curves positions"
-        if n_pushed:
-            print(
-                f"[yurameki/record] conditioned {n_pushed} points "
-                f"({n_roots} root anchors) to {_wp.ROOT_OFFSET * 1000:.2f} mm "
-                f"outside {body_name!r}"
-            )
 
         cached = self.frames.get(frame)
         if (
-            n_pushed == 0
-            and
             cached is not None
             and cached[0].shape == (n_total, 3)
             and self.obj_name == obj.name
@@ -169,7 +162,6 @@ class RecordingManager:
         n_strands = n_total // POINTS_PER_STRAND
         roots = np.arange(n_strands, dtype=np.int32) * POINTS_PER_STRAND
         try:
-            backend = bpy.context.window_manager.yurameki_compute_backend
             solver_kwargs = dict(
                 n_total=n_total,
                 n_strands=n_strands,
@@ -178,53 +170,24 @@ class RecordingManager:
                 particle_mass=_wp.PARTICLE_MASS,
                 bending_enabled=_wp.BENDING_ENABLED,
             )
-            if backend == "CUDA":
-                try:
-                    from ._sim_warp import WarpXPBDSolver
-                    solver = WarpXPBDSolver(**solver_kwargs)
-                except Exception as exc:
-                    print(
-                        "[yurameki/record] Warp solver unavailable; "
-                        f"using Taichi CUDA: {exc!r}"
-                    )
-                    from . import _sim_taichi
-                    solver_cls = _sim_taichi.get_solver_class(backend)
-                    solver = solver_cls(**solver_kwargs)
-            else:
-                from . import _sim_taichi
-                solver_cls = _sim_taichi.get_solver_class(backend)
-                solver = solver_cls(**solver_kwargs)
+            from ._sim_warp import WarpXPBDSolver
+            solver = WarpXPBDSolver(**solver_kwargs)
             solver.set_positions_velocities(positions, velocities)
         except Exception as exc:
-            return False, f"Physics solver build failed: {exc!r}"
+            return False, f"Warp CUDA solver build failed: {exc!r}"
 
-        collision = None
-        if backend == "CUDA":
-            try:
-                from ._collision_warp import WarpBodyCollider
-                collision = WarpBodyCollider(
-                    collider_names=_wp.collision_target_names(),
-                    n_total=n_total,
-                    points_per_strand=POINTS_PER_STRAND,
-                    margin=_wp.COLLISION_MARGIN,
-                    search_distance=_wp.COLLISION_SEARCH,
-                )
-                print("[yurameki/record] Warp CUDA collision cache enabled")
-            except Exception as exc:
-                if _wp.CLOTH_COLLISION_TARGET.strip():
-                    return (
-                        False,
-                        "Warp collision unavailable with Cloth Collider: "
-                        f"{exc!r}",
-                    )
-                print(
-                    "[yurameki/record] Warp collision unavailable; "
-                    f"using Python BVH: {exc!r}"
-                )
-
-        root_mask = np.zeros(n_total, dtype=bool)
-        root_mask[roots] = True
-        root_mask[roots + 1] = True
+        try:
+            from ._collision_warp import WarpBodyCollider
+            collision = WarpBodyCollider(
+                collider_names=_wp.collision_target_names(),
+                n_total=n_total,
+                points_per_strand=POINTS_PER_STRAND,
+                margin=_wp.COLLISION_MARGIN,
+                search_distance=_wp.COLLISION_SEARCH,
+            )
+            print("[yurameki/record] Warp CUDA collision cache enabled")
+        except Exception as exc:
+            return False, f"Warp CUDA collision unavailable: {exc!r}"
 
         self.obj_name = obj.name
         self.n_total = n_total
@@ -234,7 +197,6 @@ class RecordingManager:
         self.solver = solver
         self.collision = collision
         self.root_indices = roots
-        self.root_mask = root_mask
         self.previous_roots = eval_world[roots].copy()
         self.median_root_spacing = _median_root_spacing(
             self.previous_roots
@@ -301,109 +263,6 @@ class RecordingManager:
         self.restore(scene, int(start))
         return True, f"Baked {baked} frames ({start}-{end})"
 
-    def _make_collision_callback(self, body_bvh):
-        n_total = self.n_total
-        n_strands = n_total // POINTS_PER_STRAND
-        root_mask = self.root_mask
-
-        def collide(
-            pos_np, pred_np, vel_np, allow_sweep=True, final_cleanup=False
-        ):
-            if body_bvh is None:
-                return
-            normals = np.zeros_like(pred_np)
-            contacted = np.zeros(n_total, dtype=bool)
-
-            for i in range(n_total):
-                if root_mask[i]:
-                    vel_np[i] = 0.0
-                    continue
-                p0 = Vector(pos_np[i].tolist())
-                p1 = Vector(pred_np[i].tolist())
-                delta = p1 - p0
-                length = delta.length
-                hit = False
-                if allow_sweep and length > 1e-9:
-                    loc, normal, _, dist = body_bvh.ray_cast(
-                        p0, delta / length, length
-                    )
-                    if (
-                        loc is not None
-                        and dist <= length
-                        and delta.dot(normal) < 0.0
-                    ):
-                        normal.normalize()
-                        pred_np[i] = loc + normal * _wp.COLLISION_MARGIN
-                        normals[i] = normal
-                        contacted[i] = True
-                        hit = True
-                if not hit:
-                    point = Vector(pred_np[i].tolist())
-                    loc, normal, _, dist = body_bvh.find_nearest(point)
-                    if loc is not None and dist < _wp.COLLISION_SEARCH:
-                        normal.normalize()
-                        if (point - loc).dot(normal) < _wp.COLLISION_MARGIN:
-                            pred_np[i] = loc + normal * _wp.COLLISION_MARGIN
-                            normals[i] = normal
-                            contacted[i] = True
-
-            cleanup_passes = 4 if final_cleanup else 1
-            for _ in range(cleanup_passes):
-                for strand in range(n_strands):
-                    base = strand * POINTS_PER_STRAND
-                    for segment in range(POINTS_PER_STRAND - 1):
-                        i = base + segment
-                        j = i + 1
-                        p0 = Vector(pred_np[i].tolist())
-                        p1 = Vector(pred_np[j].tolist())
-                        delta = p1 - p0
-                        length = delta.length
-                        if length < 1e-9:
-                            continue
-                        loc, normal, _, dist = body_bvh.ray_cast(
-                            p0, delta / length, length
-                        )
-                        if loc is None or not (1e-6 < dist < length - 1e-6):
-                            continue
-                        normal.normalize()
-                        target = loc + normal * _wp.COLLISION_MARGIN
-                        if final_cleanup:
-                            if not root_mask[j]:
-                                pred_np[j] = target
-                                normals[j] = normal
-                                contacted[j] = True
-                            continue
-                        correction = np.array(target - loc, dtype=np.float32)
-                        fraction = dist / length
-                        wi = 0.0 if root_mask[i] else 1.0
-                        wj = 0.0 if root_mask[j] else 1.0
-                        denom = (
-                            wi * (1.0 - fraction) ** 2
-                            + wj * fraction ** 2
-                        )
-                        if denom <= 1e-12:
-                            continue
-                        if wi:
-                            pred_np[i] += (
-                                correction * (1.0 - fraction) * wi / denom
-                            )
-                            normals[i] = normal
-                            contacted[i] = True
-                        if wj:
-                            pred_np[j] += (
-                                correction * fraction * wj / denom
-                            )
-                            normals[j] = normal
-                            contacted[j] = True
-
-            for i in np.nonzero(contacted)[0]:
-                normal = normals[i]
-                normal_speed = float(np.dot(vel_np[i], normal))
-                if normal_speed < 0.0:
-                    vel_np[i] -= normal * normal_speed
-
-        return collide
-
     def _evaluate_subframe(self, scene, frame: int, subframe: float) -> None:
         self._inside_frame_eval = True
         try:
@@ -445,8 +304,6 @@ class RecordingManager:
         dt_subframe = (1.0 / fps) / float(interpolation)
         previous_frame = target_frame - 1
 
-        from . import _sim_taichi
-
         keeps_state_on_device = bool(
             getattr(self.solver, "keeps_state_on_device", False)
         )
@@ -471,30 +328,15 @@ class RecordingManager:
             offset_world = eval_world - orig_world
             roots = eval_world[self.root_indices]
             point1s = eval_world[self.root_indices + 1]
-            if wm.yurameki_compute_backend == "CUDA" and self.collision is not None:
-                try:
-                    self.collision.update_from_collider_names()
-                    collision = self.collision
-                except Exception as exc:
-                    if _wp.CLOTH_COLLISION_TARGET.strip():
-                        print(
-                            "[yurameki/record] Warp collision update failed "
-                            f"with Cloth Collider: {exc!r}"
-                        )
-                        return False
-                    print(
-                        "[yurameki/record] Warp collision update failed; "
-                        f"using Python BVH: {exc!r}"
-                    )
-                    body_bvh = _sim_taichi.build_body_bvh(
-                        wm.yurameki_body_obj.strip()
-                    )
-                    collision = self._make_collision_callback(body_bvh)
-            else:
-                body_bvh = _sim_taichi.build_body_bvh(
-                    wm.yurameki_body_obj.strip()
+            try:
+                self.collision.update_from_collider_names()
+                collision = self.collision
+            except Exception as exc:
+                print(
+                    "[yurameki/record] Warp collision update failed: "
+                    f"{exc!r}"
                 )
-                collision = self._make_collision_callback(body_bvh)
+                return False
 
             # Warp CUDA retains the authoritative position and velocity state
             # between interpolation steps. Re-upload only for solvers whose
