@@ -79,6 +79,12 @@ class YURAMEKI_PT_main(Panel):
             icon="RENDER_ANIMATION",
             depress=baking,
         )
+        progress_row = col.row(align=True)
+        progress_row.enabled = False
+        progress_row.prop(wm, "yurameki_bake_progress", slider=True)
+        progress_text = getattr(wm, "yurameki_bake_progress_text", "")
+        if progress_text:
+            col.label(text=progress_text)
         col.separator()
         col.prop(wm, "yurameki_export_path", text="")
         col.operator("yurameki.export_alembic", icon="EXPORT")

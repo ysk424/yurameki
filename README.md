@@ -20,6 +20,9 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - **指定レンジの一括シミュレーション（`Simulate Range`）**
 - Start / End フレーム指定。初期値はシーンのフレーム範囲（1〜最終フレーム）
 - `Simulate Range` は録画経路でレンジをベイクし、圧縮キャッシュで再生します
+- v0.3.1: `Auto Frame Interpolation` is enabled by default. During range
+  simulation, Yurameki chooses sub-frame physics steps from root motion and root
+  spacing, and shows bake progress in Blender's progress meter and the panel.
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
 - v0.3.0: strandごとの点数固定を解除しました。同一Curves内の全strandが
   同じpoints数なら、9 points以外でもシミュレーションできます。
@@ -67,7 +70,9 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 3. `Check Hair` でstrand構造とroot距離を確認します。
 4. 必要なら `Simulate` で現在フレームの形を整えます。
 5. `Bake & Export` で Start / End を指定（`Use Scene Range` でシーン範囲を流用）。
-6. `Simulate Range` でレンジ全体を計算し、各フレームをキャッシュします。
+6. `Auto Frame Interpolation` をオンにしたまま `Simulate Range` を実行します。
+   速いフレームでは物理サブステップ数が自動で増え、進捗はパネルと
+   Blenderのプログレスメーターに表示されます。
 7. タイムラインを再生すると、ベイク結果が再生されます。
 
 ## Alembic 書き出し

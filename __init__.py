@@ -165,6 +165,18 @@ def _sync_bake_range_to_scene():
         wm.yurameki_bake_end = int(scene.frame_end)
 
 
+def _sync_default_ui_state():
+    wm = getattr(bpy.context, "window_manager", None)
+    if wm is None:
+        return
+    if hasattr(wm, "yurameki_auto_frame_interpolation"):
+        wm.yurameki_auto_frame_interpolation = True
+    if hasattr(wm, "yurameki_bake_progress"):
+        wm.yurameki_bake_progress = 0.0
+    if hasattr(wm, "yurameki_bake_progress_text"):
+        wm.yurameki_bake_progress_text = "Ready"
+
+
 class YURAMEKI_OT_simulate(Operator):
     bl_idname      = "yurameki.simulate"
     bl_label       = "Simulate (current frame)"
@@ -312,13 +324,42 @@ class YURAMEKI_OT_bake_range(_BusyOperatorMixin, Operator):
                 return {"CANCELLED"}
         _snapshot_sim_params(wm)
         from . import _recording
-        ok, message = _recording.manager.bake_range(
-            context.scene,
-            int(wm.yurameki_bake_start),
-            int(wm.yurameki_bake_end),
-        )
+        start = int(wm.yurameki_bake_start)
+        end = int(wm.yurameki_bake_end)
+        total = max(1, end - start + 1)
+
+        wm.yurameki_bake_progress = 0.0
+        wm.yurameki_bake_progress_text = f"Starting {start}-{end}"
+        context.window_manager.progress_begin(0, total)
+
+        def _progress(frame, first, last, completed):
+            percent = min(100.0, max(0.0, 100.0 * completed / total))
+            wm.yurameki_bake_progress = percent
+            wm.yurameki_bake_progress_text = (
+                f"Frame {frame}/{last}  {percent:.1f}%"
+            )
+            context.window_manager.progress_update(completed)
+            _tag_redraw(context)
+            if completed == 1 or completed == total or completed % 5 == 0:
+                try:
+                    bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+                except Exception:
+                    pass
+
+        try:
+            ok, message = _recording.manager.bake_range(
+                context.scene,
+                start,
+                end,
+                progress_callback=_progress,
+            )
+        finally:
+            context.window_manager.progress_end()
         if not ok:
+            wm.yurameki_bake_progress_text = message
             self.report({"ERROR"}, message); return {"CANCELLED"}
+        wm.yurameki_bake_progress = 100.0
+        wm.yurameki_bake_progress_text = message
         self.report({"INFO"}, message)
         return {"FINISHED"}
 
@@ -418,6 +459,7 @@ def _on_save_post(_filepath):
 def _on_load_post(_filepath):
     from . import _recording
     _sync_bake_range_to_scene()
+    _sync_default_ui_state()
     if _recording.manager.load_cache():
         _recording.manager.restore(bpy.context.scene, bpy.context.scene.frame_current)
 
@@ -451,7 +493,8 @@ _PROP_NAMES = (
     "yurameki_body_obj",
     "yurameki_cloth_obj",
     "yurameki_bake_start", "yurameki_bake_end", "yurameki_export_path",
-    "yurameki_bake_running",
+    "yurameki_bake_running", "yurameki_bake_progress",
+    "yurameki_bake_progress_text",
     "yurameki_spring_ke", "yurameki_damping", "yurameki_particle_mass",
     "yurameki_gravity", "yurameki_iterations",
     "yurameki_collision_margin", "yurameki_collision_search",
@@ -531,6 +574,11 @@ def register():
             default="//hair.abc", subtype="FILE_PATH", options={"SKIP_SAVE"})
         WindowManager.yurameki_bake_running = BoolProperty(
             name="Bake Running", default=False, options={"SKIP_SAVE"})
+        WindowManager.yurameki_bake_progress = FloatProperty(
+            name="Progress", default=0.0, min=0.0, max=100.0,
+            subtype="PERCENTAGE", options={"SKIP_SAVE"})
+        WindowManager.yurameki_bake_progress_text = StringProperty(
+            name="Bake Progress", default="Ready", options={"SKIP_SAVE"})
         WindowManager.yurameki_spring_ke = FloatProperty(
             name="Stiffness 10^N", default=math.log10(defaults["SPRING_KE"]),
             min=1.0, max=9.0, step=10, precision=2, options={"SKIP_SAVE"})
@@ -580,6 +628,7 @@ def register():
         _install_handlers()
         handlers_installed = True
         _sync_bake_range_to_scene()
+        _sync_default_ui_state()
         from . import _recording
         if _recording.manager.load_cache():
             scene = getattr(bpy.context, "scene", None)

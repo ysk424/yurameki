@@ -5,6 +5,23 @@ This file is a handoff log for Claude Code sessions.
 
 ---
 
+## v0.3.1 final polish (2026-06-29)
+
+Yurameki is being treated as the finished Blender-side add-on build.
+
+- `Auto Frame Interpolation` is forced on when the add-on registers or a blend is
+  loaded. This is not visual interpolation; it chooses the number of physics
+  evaluations between frames from root motion and median root spacing, then
+  multiplies by `Interpolation Mag`.
+- `Simulate Range` now reports progress through Blender's progress meter and the
+  N-panel: percentage plus current frame text. The actual simulation path is still
+  `_recording.manager.bake_range()` -> `_simulate_next()`; no solver algorithm was
+  changed.
+- Local incomplete leftovers were cleaned: untracked `tests/` smoke artifacts and
+  untracked old `dist/yurameki-0.2.0.zip`.
+
+---
+
 ## ⚠️ START HERE — Real cause of "hair pokes through head" FOUND (2026-06-23 PM)
 
 ### 2026-06-26 experiment: tail-preserving collision pushout FAILED

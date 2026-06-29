@@ -236,7 +236,13 @@ class RecordingManager:
             return True, "Playback"
         return self.start(scene)
 
-    def bake_range(self, scene, start: int, end: int) -> tuple[bool, str]:
+    def bake_range(
+        self,
+        scene,
+        start: int,
+        end: int,
+        progress_callback=None,
+    ) -> tuple[bool, str]:
         """Simulate frames [start, end] in one batch and cache every frame.
 
         Reuses the same per-frame solver path as interactive recording, but
@@ -251,11 +257,20 @@ class RecordingManager:
         ok, message = self.start(scene)
         if not ok:
             return False, message
+        if progress_callback is not None:
+            progress_callback(int(start), int(start), int(end), 1)
         try:
             for frame in range(int(start) + 1, int(end) + 1):
                 if not self._simulate_next(scene, frame):
                     self.stop("bake aborted by simulation error")
                     return False, f"Simulation failed at frame {frame}"
+                if progress_callback is not None:
+                    progress_callback(
+                        int(frame),
+                        int(start),
+                        int(end),
+                        int(frame) - int(start) + 1,
+                    )
         finally:
             baked = len(self.frames)
             self.stop("bake complete")
