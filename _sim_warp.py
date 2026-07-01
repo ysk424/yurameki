@@ -177,6 +177,38 @@ def _derive_velocity(
 
 
 @wp.kernel
+def _clamp_predicted_motion(
+    pos: wp.array(dtype=wp.vec3),
+    predicted: wp.array(dtype=wp.vec3),
+    inverse_mass: wp.array(dtype=float),
+    segment_rest: wp.array(dtype=float),
+    points_per_strand: int,
+    min_move: float,
+    rest_factor: float,
+):
+    i = wp.tid()
+    if inverse_mass[i] <= 0.0:
+        predicted[i] = pos[i]
+        return
+
+    strand = i // points_per_strand
+    point = i % points_per_strand
+    segment_base = strand * (points_per_strand - 1)
+
+    local_rest = 0.0
+    if point > 0:
+        local_rest = wp.max(local_rest, segment_rest[segment_base + point - 1])
+    if point < points_per_strand - 1:
+        local_rest = wp.max(local_rest, segment_rest[segment_base + point])
+
+    max_move = wp.max(min_move, local_rest * rest_factor)
+    delta = predicted[i] - pos[i]
+    distance = wp.length(delta)
+    if distance > max_move and distance > 1.0e-8:
+        predicted[i] = pos[i] + delta * (max_move / distance)
+
+
+@wp.kernel
 def _commit_positions(
     pos: wp.array(dtype=wp.vec3),
     predicted: wp.array(dtype=wp.vec3),
@@ -417,6 +449,7 @@ class WarpXPBDSolver:
                     angle_limit_ke,
                 )
 
+            self._clamp_motion()
             if body_collision_fn is None:
                 wp.launch(
                     _derive_velocity,
@@ -462,6 +495,20 @@ class WarpXPBDSolver:
                     allow_sweep=False,
                     final_cleanup=True,
                 )
+                self._clamp_motion()
+                wp.launch(
+                    _derive_velocity,
+                    dim=self.n_total,
+                    inputs=[
+                        self.pos,
+                        self.predicted,
+                        self.vel,
+                        self.inverse_mass,
+                        dt_sub,
+                        float(damping),
+                    ],
+                    device=self.device,
+                )
 
             wp.launch(
                 _commit_positions,
@@ -472,6 +519,22 @@ class WarpXPBDSolver:
 
         wp.synchronize()
         return self.pos.numpy()
+
+    def _clamp_motion(self):
+        wp.launch(
+            _clamp_predicted_motion,
+            dim=self.n_total,
+            inputs=[
+                self.pos,
+                self.predicted,
+                self.inverse_mass,
+                self.segment_rest,
+                self.pps,
+                0.02,
+                8.0,
+            ],
+            device=self.device,
+        )
 
     def _solve(
         self,

@@ -208,8 +208,38 @@ class YURAMEKI_OT_simulate(Operator):
                 return {"CANCELLED"}
         _wp.BODY_COLLISION_TARGET = body.name
         status = _wp.run_simulation(
-            obj.name, wm.yurameki_simulation_steps, context.scene
+            obj.name,
+            wm.yurameki_simulation_steps,
+            context.scene,
+            frame_interpolation=max(1, int(wm.yurameki_frame_interpolation))
+            * max(1, int(wm.yurameki_interpolation_mag)),
         )
+        if status.startswith("ERROR"):
+            self.report({"ERROR"}, status); return {"CANCELLED"}
+        _clear_recording_cache()
+        self.report({"INFO"}, status)
+        return {"FINISHED"}
+
+
+class YURAMEKI_OT_cleanup(Operator):
+    bl_idname = "yurameki.cleanup"
+    bl_label = "Clean up"
+    bl_description = "Force-repair strong outlier strands on the current frame"
+
+    def execute(self, context):
+        obj = _find_curves_obj()
+        if obj is None:
+            self.report({"ERROR"}, "Need exactly one Curves object"); return {"CANCELLED"}
+        wm = context.window_manager
+        ok, message = _check_hair(context, repair_roots=True)
+        wm.yurameki_hair_check_ok = ok
+        wm.yurameki_hair_check_status = message
+        if not ok:
+            self.report({"WARNING"}, message)
+            return {"CANCELLED"}
+        _snapshot_sim_params(wm)
+        from . import _world_passthrough as _wp
+        status = _wp.clean_up_current_frame(obj.name, context.scene)
         if status.startswith("ERROR"):
             self.report({"ERROR"}, status); return {"CANCELLED"}
         _clear_recording_cache()
@@ -433,6 +463,7 @@ class YURAMEKI_OT_pick_cloth(Operator):
 
 _classes = (
     YURAMEKI_OT_simulate,
+    YURAMEKI_OT_cleanup,
     YURAMEKI_OT_check_hair,
     YURAMEKI_OT_record,
     YURAMEKI_OT_bake_range,
@@ -523,8 +554,11 @@ def register():
             registered_classes.append(cls)
 
         WindowManager.yurameki_simulation_steps = IntProperty(
-            name="Simulation Steps", description="Number of XPBD simulation steps",
-            default=20, min=1, max=500, options={"SKIP_SAVE"})
+            name="Simulation Frames",
+            description=(
+                "Number of fixed-frame physics frames to relax before baking"
+            ),
+            default=6, min=1, max=500, options={"SKIP_SAVE"})
         WindowManager.yurameki_frame_interpolation = IntProperty(
             name="Frame Interpolation",
             description=(

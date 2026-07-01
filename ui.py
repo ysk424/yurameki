@@ -47,12 +47,13 @@ class YURAMEKI_PT_main(Panel):
             col.label(text=status, icon=icon)
         col.prop(wm, "yurameki_points_per_strand")
 
-        # Static styling on the current frame
+        # Fixed-frame relaxation before range simulation
         box = layout.box()
         box.label(text="Static Styling")
         col = box.column(align=True)
         col.prop(wm, "yurameki_simulation_steps")
         col.operator("yurameki.simulate", icon="PLAY")
+        col.operator("yurameki.cleanup", icon="BRUSH_DATA")
 
         # Range bake + export
         box = layout.box()

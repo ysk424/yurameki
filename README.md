@@ -23,6 +23,12 @@ Yurameki（揺らめき、*shimmer/sway*）は、Blender 5.1用のヘアシミ�
 - v0.3.1: `Auto Frame Interpolation` is enabled by default. During range
   simulation, Yurameki chooses sub-frame physics steps from root motion and root
   spacing, and shows bake progress in Blender's progress meter and the panel.
+- v0.3.4: adds a Warp CUDA motion clamp after each simulation substep. This is
+  a lightweight safety guard that limits unusually large predicted point motion
+  on the GPU before it becomes a visible exploding strand.
+- v0.3.3: adds a manual `Clean up` button under Static Styling. It uses a
+  CPU/Numpy neighbour repair pass for badly bent or locally displaced strands
+  and is intended as an experimental grooming/reset tool.
 - Alembic 書き出し欄（v0.1.0 ではUIのみ。実処理は後続のサーバーで実装予定）
 - v0.3.0: strandごとの点数固定を解除しました。同一Curves内の全strandが
   同じpoints数なら、9 points以外でもシミュレーションできます。
@@ -92,6 +98,31 @@ The implementation constrains the equivalent `p0-p2` chord range on the GPU
 after the existing segment and bending springs. It is intentionally a single
 global value for now, so the effect of the angle limit can be evaluated before
 adding UI controls or per-point/texture-style maps.
+
+## CUDA motion clamp
+
+v0.3.4 adds a simple predicted-motion clamp inside the Warp CUDA solver. After
+the XPBD constraints are solved for a substep, each movable point compares its
+predicted displacement against a limit derived from nearby rest segment length.
+If the predicted displacement is too large, the point is pulled back along the
+same direction instead of being allowed to jump freely.
+
+This is intentionally not a full neighbour-based comb repair. It does not look
+for median guide strands and does not try to restyle the hair. Its purpose is to
+act as a cheap GPU-side fuse against one-frame energy spikes that can throw a
+strand far outside the rest of the groom.
+
+The current hard-coded experimental limits are:
+
+```text
+minimum allowed move: 0.02 m
+rest segment factor: 8.0
+```
+
+If the hair still throws stray strands, the rest segment factor can be lowered.
+If the motion becomes too stiff or slow, the factor can be raised. The clamp is
+applied on the GPU and avoids the CPU readback cost of the manual Clean up
+operation.
 
 ## Collision tuning
 
