@@ -1,6 +1,10 @@
-"""Yurameki N-panel (VIEW_3D sidebar, tab 'Yurameki')."""
+"""Yurameki CUDA prototype N-panel."""
+
 from __future__ import annotations
-import os, tomllib
+
+import os
+import tomllib
+
 import bpy
 from bpy.types import Panel
 
@@ -15,100 +19,57 @@ def _version():
 
 
 class YURAMEKI_PT_main(Panel):
-    bl_idname      = "YURAMEKI_PT_main"
-    bl_label       = "Yurameki"
-    bl_space_type  = "VIEW_3D"
+    bl_idname = "YURAMEKI_PT_main"
+    bl_label = "Yurameki"
+    bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category    = "Yurameki"
+    bl_category = "Yurameki"
 
     def draw(self, context):
         layout = self.layout
-        wm     = context.window_manager
+        wm = context.window_manager
 
-        layout.label(text=f"Yurameki  v{_version()}")
-        layout.separator(factor=0.3)
+        layout.label(text=f"Yurameki v{_version()}")
+        layout.separator(factor=0.4)
 
-        # Body and solver
         box = layout.box()
-        box.label(text="Setup")
+        box.label(text="Input")
         col = box.column(align=True)
-        row = col.row(align=True)
-        row.prop(wm, "yurameki_body_obj", text="Body")
-        row.operator("yurameki.pick_body", text="", icon="EYEDROPPER")
-        row = col.row(align=True)
-        row.prop(wm, "yurameki_cloth_obj", text="Cloth")
-        row.operator("yurameki.pick_cloth", text="", icon="EYEDROPPER")
-        col.prop(wm, "yurameki_root_min_distance")
-        row = col.row(align=True)
-        row.operator("yurameki.check_hair", icon="CHECKMARK")
+        col.operator("yurameki.check_hair", icon="CHECKMARK")
+        col.prop(wm, "yurameki_points_per_strand")
         status = getattr(wm, "yurameki_hair_check_status", "")
         if status:
-            icon = "CHECKMARK" if getattr(wm, "yurameki_hair_check_ok", False) else "ERROR"
-            col.label(text=status, icon=icon)
-        col.prop(wm, "yurameki_points_per_strand")
+            col.label(text=status)
 
-        # Fixed-frame relaxation before range simulation
         box = layout.box()
-        box.label(text="Static Styling")
+        box.label(text="Cylinder Interface")
         col = box.column(align=True)
-        col.prop(wm, "yurameki_simulation_steps")
-        col.operator("yurameki.simulate", icon="PLAY")
-        col.operator("yurameki.cleanup", icon="BRUSH_DATA")
+        col.prop(wm, "yurameki_cylinder_length_cm")
+        col.prop(wm, "yurameki_solver_probe_sort_axis")
+        col.prop(wm, "yurameki_solver_probe_axis_step_mm")
+        col.prop(wm, "yurameki_solver_probe_tip_back_cm")
+        col.prop(wm, "yurameki_solver_probe_path")
+        row = col.row(align=True)
+        row.operator("yurameki.export_solver_interface", icon="EXPORT")
+        row.operator("yurameki.apply_solver_probe_step", icon="FORWARD")
 
-        # Range bake + export
         box = layout.box()
-        box.label(text="Bake & Export")
+        box.label(text="FK Chain Test")
+        col = box.column(align=True)
+        col.prop(wm, "yurameki_fk_root_pull_y_mm")
+        col.operator("yurameki.apply_fk_root_pull", icon="CONSTRAINT_BONE")
+
+        box = layout.box()
+        box.label(text="CUDA Collider")
         col = box.column(align=True)
         row = col.row(align=True)
-        row.prop(wm, "yurameki_bake_start")
-        row.prop(wm, "yurameki_bake_end")
-        col.operator("yurameki.use_scene_range", icon="PREVIEW_RANGE")
-        col.separator()
-        col.prop(wm, "yurameki_auto_frame_interpolation")
-        row = col.row(align=True)
-        row.enabled = not wm.yurameki_auto_frame_interpolation
-        row.prop(wm, "yurameki_frame_interpolation")
-        if wm.yurameki_auto_frame_interpolation:
-            col.label(text=f"Auto Steps: {wm.yurameki_auto_interpolation_current}")
-        col.separator()
-        row = col.row(align=True)
-        baking = getattr(wm, "yurameki_bake_running", False)
-        row.alert = baking
-        row.operator(
-            "yurameki.bake_range",
-            text="Simulate Range" if not baking else "Simulate Range ●",
-            icon="RENDER_ANIMATION",
-            depress=baking,
-        )
-        progress_row = col.row(align=True)
-        progress_row.enabled = False
-        progress_row.prop(wm, "yurameki_bake_progress", slider=True)
-        progress_text = getattr(wm, "yurameki_bake_progress_text", "")
-        if progress_text:
-            col.label(text=progress_text)
-        col.separator()
-        col.prop(wm, "yurameki_export_path", text="")
-        col.operator("yurameki.export_alembic", icon="EXPORT")
-
-        # Physics
-        layout.separator(factor=0.3)
-        box = layout.box()
-        box.label(text="Physics (applied at Simulate / Bake)")
-        col = box.column(align=True)
-        col.prop(wm, "yurameki_spring_ke")
-        col.prop(wm, "yurameki_damping")
-        col.prop(wm, "yurameki_particle_mass")
-        col.prop(wm, "yurameki_gravity")
-        col.separator()
-        col.prop(wm, "yurameki_iterations")
-        col.prop(wm, "yurameki_interpolation_mag")
-        col.prop(wm, "yurameki_collision_margin")
-        col.prop(wm, "yurameki_collision_search")
-        col.separator()
-        col.prop(wm, "yurameki_bending_enabled")
-        if getattr(wm, "yurameki_bending_enabled", False):
-            col.prop(wm, "yurameki_root_bending_ke")
-            col.prop(wm, "yurameki_bending_ke")
+        row.prop(wm, "yurameki_collider_obj")
+        row.operator("yurameki.pick_collider", text="", icon="EYEDROPPER")
+        col.prop(wm, "yurameki_collider_radius_mm")
+        col.prop(wm, "yurameki_collider_substeps")
+        col.prop(wm, "yurameki_collider_max_move_mm")
+        col.operator("yurameki.detect_cuda_collider", icon="MOD_PHYSICS")
+        col.operator("yurameki.apply_cuda_collider_avoidance", icon="FORCE_FORCE")
 
 
 _classes = (YURAMEKI_PT_main,)

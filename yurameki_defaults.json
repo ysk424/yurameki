@@ -1,18 +1,11 @@
 {
-    "SPRING_KE":             1000000000.0,
-    "DAMPING":               0.08,
-    "PARTICLE_MASS":         0.1,
-    "GRAVITY":               [0.0, 0.0, -9.81],
-    "ITERATIONS":            10,
-    "INTERPOLATION_MAG":     1,
-    "BENDING_ENABLED":       false,
-    "ROOT_BENDING_KE":       2000.0,
-    "BENDING_KE":            10.0,
-    "ANGLE_LIMIT_ENABLED":    true,
-    "ANGLE_LIMIT_RAD":        1.0,
-    "ANGLE_LIMIT_KE":         1000000.0,
-    "COLLISION_MARGIN":       0.0005,
-    "COLLISION_SEARCH":       0.003,
-    "ROOT_MIN_DISTANCE":      0.0001,
-    "BODY_COLLISION_TARGET": "CC_Base_Body"
+    "CYLINDER_LENGTH_CM": 1.0,
+    "SOLVE_ORDER_AXIS": "Z",
+    "PROBE_AXIS_STEP_MM": 0.3,
+    "PROBE_TIP_BACK_CM": 3.0,
+    "FK_ROOT_PULL_Y_MM": 0.3,
+    "COLLIDER_RADIUS_MM": 0.5,
+    "COLLIDER_SUBSTEPS": 8,
+    "COLLIDER_MAX_MOVE_MM": 1.0,
+    "COLLIDER_OBJECT": ""
 }

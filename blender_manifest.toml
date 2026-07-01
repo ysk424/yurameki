@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.3.4"
+version = "0.4.6"
 name = "Yurameki"
-tagline = "Yurameki (揺らめき) — Warp CUDA XPBD hair simulation and bake"
+tagline = "Yurameki (揺らめき) — CUDA hair solver prototype"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
 type = "add-on"
 
@@ -19,11 +19,15 @@ platforms = ["windows-x64"]
 paths = [
     "__init__.py",
     "ui.py",
-    "_world_passthrough.py",
-    "_recording.py",
-    "_collision_warp.py",
-    "_sim_warp.py",
+    "solver_interface.py",
+    "cuda_collider.py",
     "yurameki_defaults.json",
     "README.md",
+    "DEVELOPMENT_NOTES.md",
     "LICENSE",
+    "native/CMakeLists.txt",
+    "native/build.ps1",
+    "native/yurameki_cuda_collide.cu",
+    "native/yurameki_cuda_collide.h",
+    "native/yurameki_cuda_collide.dll",
 ]
