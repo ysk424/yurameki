@@ -420,3 +420,103 @@ def export_probe_json(curves_obj, path: str, **kwargs) -> str:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return os.path.abspath(path)
+
+
+def gravity_direction_for_step(step_index: int, blend_steps: int) -> np.ndarray:
+    """Blend startup gravity from back direction (+Y) to normal gravity (-Z)."""
+    if blend_steps <= 0:
+        t = 1.0
+    else:
+        t = min(1.0, max(0.0, float(step_index) / float(blend_steps)))
+    start = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    end = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    return _unit_or(start * (1.0 - t) + end * t, end)
+
+
+def build_directional_gravity_fk_step(curves_obj, points_per_strand: int,
+                                      sort_axis: str = "Z",
+                                      target_length_m: float = DEFAULT_CYLINDER_LENGTH,
+                                      gravity_step_m: float = 0.001,
+                                      step_index: int = 0,
+                                      gravity_blend_steps: int = 12):
+    model = build_cylinder_model(
+        curves_obj,
+        points_per_strand=points_per_strand,
+        sort_axis=sort_axis,
+        cylinder_length_m=target_length_m,
+    )
+    out_roots = np.zeros_like(model.roots)
+    out_tips = np.zeros_like(model.roots)
+    gravity_dir = gravity_direction_for_step(step_index, gravity_blend_steps)
+    gravity = gravity_dir * float(gravity_step_m)
+
+    max_chain_gap = 0.0
+    max_tip_displacement = 0.0
+
+    for si in range(model.n_strands):
+        begin = int(model.strand_offsets[si])
+        end = int(model.strand_offsets[si + 1])
+        current = model.roots[begin].copy()
+
+        for ci in range(begin, end):
+            out_roots[ci] = current
+            desired = current + model.dirs[ci] * model.lengths[ci] + gravity
+            direction = _unit_or(desired - current, model.dirs[ci])
+            tip = current + direction * model.lengths[ci]
+            out_tips[ci] = tip
+            original_tip = model.roots[ci] + model.dirs[ci] * model.lengths[ci]
+            max_tip_displacement = max(
+                max_tip_displacement,
+                float(np.linalg.norm(tip - original_tip)),
+            )
+            current = tip
+
+        if end - begin > 1:
+            gaps = np.linalg.norm(out_roots[begin + 1:end] - out_tips[begin:end - 1], axis=1)
+            max_chain_gap = max(max_chain_gap, float(np.max(gaps)))
+
+    length_error = np.linalg.norm(out_tips - out_roots, axis=1) - model.lengths
+    return {
+        "model": model,
+        "roots": out_roots,
+        "tips": out_tips,
+        "length_error_m": length_error.astype(np.float32),
+        "max_chain_gap_m": float(max_chain_gap),
+        "max_tip_displacement_m": float(max_tip_displacement),
+        "gravity_dir": gravity_dir.astype(np.float32),
+    }
+
+
+def apply_directional_gravity_fk_step(curves_obj, points_per_strand: int,
+                                      sort_axis: str = "Z",
+                                      target_length_m: float = DEFAULT_CYLINDER_LENGTH,
+                                      gravity_step_m: float = 0.001,
+                                      step_index: int = 0,
+                                      gravity_blend_steps: int = 12) -> dict:
+    step = build_directional_gravity_fk_step(
+        curves_obj,
+        points_per_strand=points_per_strand,
+        sort_axis=sort_axis,
+        target_length_m=target_length_m,
+        gravity_step_m=gravity_step_m,
+        step_index=step_index,
+        gravity_blend_steps=gravity_blend_steps,
+    )
+    model = step["model"]
+    _eval_world, original_world = _read_world(curves_obj)
+    offset = model.world - original_world
+    reconstructed = reconstruct_points(model, step["roots"], step["tips"])
+    _write_world_points(curves_obj, reconstructed, offset=offset)
+    gravity_dir = step["gravity_dir"]
+    return {
+        "n_strands": model.n_strands,
+        "n_cylinders": model.n_cylinders,
+        "max_len_err_mm": float(np.max(np.abs(step["length_error_m"])) * 1000.0),
+        "max_chain_gap_mm": float(step["max_chain_gap_m"] * 1000.0),
+        "max_tip_displacement_mm": float(step["max_tip_displacement_m"] * 1000.0),
+        "gravity_dir": (
+            float(gravity_dir[0]),
+            float(gravity_dir[1]),
+            float(gravity_dir[2]),
+        ),
+    }

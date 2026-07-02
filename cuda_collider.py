@@ -39,15 +39,20 @@ class ColliderAvoidanceResult:
     max_tip_adjust_mm: float
 
 
-def _dll_path() -> str:
-    return os.path.join(os.path.dirname(__file__), "native", DLL_NAME)
+def _dll_candidates():
+    base = os.path.dirname(__file__)
+    return [
+        os.path.join(base, "native", DLL_NAME),
+        os.path.join(base, DLL_NAME),
+    ]
 
 
 def _load_dll():
-    path = _dll_path()
-    if not os.path.exists(path):
+    path = next((candidate for candidate in _dll_candidates() if os.path.exists(candidate)), None)
+    if path is None:
         raise FileNotFoundError(
-            f"{DLL_NAME} was not found. Build native/build.ps1 first: {path}"
+            f"{DLL_NAME} was not found. Build native/build.ps1 first. "
+            f"Searched: {', '.join(_dll_candidates())}"
         )
     dll = ctypes.CDLL(path)
     dll.yurameki_cuda_detect_capsule_mesh.argtypes = [
