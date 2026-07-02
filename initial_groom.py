@@ -81,6 +81,7 @@ def settle_hair_back(
     follow_radius_m: float = 0.0300,
     release_probe_m: float = 0.0200,
     release_clearance_m: float = 0.0040,
+    outside_clearance_m: float = 0.0040,
     max_surface_run_m: float = 0.0300,
     surface_stick: float = 0.78,
     push_iterations: int = 5,
@@ -120,6 +121,9 @@ def settle_hair_back(
     stats = {
         "slide_events": 0,
         "release_events": 0,
+        "back_release_events": 0,
+        "release_blocked_inside": 0,
+        "release_blocked_ray": 0,
         "forced_release_events": 0,
         "ray_hits": 0,
         "nearest_pushes": 0,
@@ -132,12 +136,59 @@ def settle_hair_back(
         "tip_down_dot_sum": 0.0,
     }
 
-    def clear_along(point: Vector, direction: Vector, distance: float, clearance: float) -> bool:
+    back_down = (BACK * 0.55 + DOWN * 0.83).normalized()
+
+    def signed_outside_distance(point: Vector, search_radius: float = 0.080) -> float:
+        nearest = bvh.find_nearest(point, search_radius)
+        if nearest is None:
+            return 999.0
+        loc, normal, _index, _dist = nearest
+        if loc is None or normal is None:
+            return 999.0
+        return float((point - loc).dot(normal.normalized()))
+
+    def release_path_outside_enough(point: Vector, direction: Vector) -> bool:
+        # A single endpoint can be outside while the path still cuts behind an
+        # ear/scalp feature.  Check the whole short release path instead.
+        for factor in (0.25, 0.5, 0.75, 1.0):
+            sample = point + direction * (release_probe_m * factor)
+            if signed_outside_distance(sample) < outside_clearance_m:
+                return False
+        return True
+
+    def ray_clear(point: Vector, direction: Vector, distance: float) -> bool:
         hit = bvh.ray_cast(point, direction, distance)
         if hit is not None:
             loc, _normal, _index, dist = hit
             if loc is not None and dist is not None and 0.0002 < dist <= distance:
                 return False
+        return True
+
+    def release_direction_if_safe(point: Vector):
+        down_ray = ray_clear(point, DOWN, release_probe_m)
+        down_outside = release_path_outside_enough(point, DOWN)
+        if down_ray and down_outside:
+            stats["release_events"] += 1
+            return DOWN.copy(), True
+        if not down_ray:
+            stats["release_blocked_ray"] += 1
+        if not down_outside:
+            stats["release_blocked_inside"] += 1
+
+        back_ray = ray_clear(point, back_down, release_probe_m)
+        back_outside = release_path_outside_enough(point, back_down)
+        if back_ray and back_outside:
+            stats["back_release_events"] += 1
+            return back_down.copy(), True
+        if not back_ray:
+            stats["release_blocked_ray"] += 1
+        if not back_outside:
+            stats["release_blocked_inside"] += 1
+        return None, False
+
+    def clear_along(point: Vector, direction: Vector, distance: float, clearance: float) -> bool:
+        if not ray_clear(point, direction, distance):
+            return False
         end = point + direction * distance
         nearest = bvh.find_nearest(end, max(clearance * 3.0, follow_radius_m))
         if nearest is None:
@@ -157,11 +208,9 @@ def settle_hair_back(
         if dist >= follow_radius_m:
             return desired_dir, 0.0, False
 
-        safe_down = clear_along(point, DOWN, release_probe_m, release_clearance_m)
-        down_not_into_body = DOWN.dot(normal) > -0.25
-        if safe_down and (down_not_into_body or surface_run > collision_radius_m):
-            stats["release_events"] += 1
-            return DOWN.copy(), 0.0, False
+        release_dir, released = release_direction_if_safe(point)
+        if released and (surface_run > collision_radius_m or release_dir.dot(normal) > -0.25):
+            return release_dir, 0.0, False
 
         slide = _project_to_tangent(desired_dir, normal)
         weight = max(0.0, min(1.0, (follow_radius_m - dist) / follow_radius_m)) * surface_stick
@@ -304,6 +353,9 @@ def settle_hair_back(
         "elapsed_sec": float(time.perf_counter() - start_time),
         "slide_events": int(stats["slide_events"]),
         "release_events": int(stats["release_events"]),
+        "back_release_events": int(stats["back_release_events"]),
+        "release_blocked_inside": int(stats["release_blocked_inside"]),
+        "release_blocked_ray": int(stats["release_blocked_ray"]),
         "forced_release_events": int(stats["forced_release_events"]),
         "ray_hits": int(stats["ray_hits"]),
         "nearest_pushes": int(stats["nearest_pushes"]),

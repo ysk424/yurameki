@@ -128,10 +128,11 @@ def _settle_hair_to_back(context):
         stats = initial_groom.settle_hair_back(
             obj,
             collider,
-            max_strands=int(wm.yurameki_groom_strands),
+            max_strands=int(wm.yurameki_groom_until_rank),
             collision_radius_m=float(wm.yurameki_groom_radius_mm) * 1.0e-3,
             follow_radius_m=float(wm.yurameki_groom_follow_mm) * 1.0e-3,
             release_probe_m=float(wm.yurameki_groom_release_mm) * 1.0e-3,
+            outside_clearance_m=float(wm.yurameki_groom_outside_mm) * 1.0e-3,
         )
     except Exception as exc:
         return False, f"Settle hair failed: {exc!r}"
@@ -263,10 +264,11 @@ _PROP_NAMES = (
     "yurameki_solver_step_index",
     "yurameki_gravity_step_mm",
     "yurameki_gravity_blend_steps",
-    "yurameki_groom_strands",
+    "yurameki_groom_until_rank",
     "yurameki_groom_radius_mm",
     "yurameki_groom_follow_mm",
     "yurameki_groom_release_mm",
+    "yurameki_groom_outside_mm",
     "yurameki_cylinder_length_cm",
     "yurameki_collider_obj",
     "yurameki_collider_radius_mm",
@@ -337,10 +339,10 @@ def register():
             max=240,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_groom_strands = IntProperty(
-            name="Groom Strands",
-            description="Number of lower-Z root strands to groom; 0 means all strands",
-            default=int(defaults.get("GROOM_STRANDS", 500)),
+        WindowManager.yurameki_groom_until_rank = IntProperty(
+            name="Groom Until",
+            description="Temporary debug limit: process lower-Z root order up to this count; 0 means all strands",
+            default=int(defaults.get("GROOM_UNTIL_RANK", 500)),
             min=0,
             max=200000,
             options={"SKIP_SAVE"},
@@ -366,6 +368,14 @@ def register():
             default=float(defaults.get("GROOM_RELEASE_MM", 20.0)),
             min=1.0,
             max=200.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_outside_mm = FloatProperty(
+            name="Outside mm",
+            default=float(defaults.get("GROOM_OUTSIDE_MM", 4.0)),
+            min=0.1,
+            max=50.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
