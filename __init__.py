@@ -1,17 +1,7 @@
-"""Yurameki 0.4.x -- CUDA solver prototype interface.
-
-This fork intentionally contains only the new Blender <-> solver interface:
-
-* read a Curves object
-* split each strand into 1 cm cylinders
-* build a fixed solve-order array
-* export the arrays
-* apply one probe step back to Blender while preserving cylinder length
-"""
+"""Yurameki 0.4.x -- CUDA straight long-hair solver prototype."""
 
 from __future__ import annotations
 
-import json
 import os
 
 import bpy
@@ -22,6 +12,8 @@ from . import ui
 
 
 def _load_defaults():
+    import json
+
     path = os.path.join(os.path.dirname(__file__), "yurameki_defaults.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -52,14 +44,12 @@ def _points_per_strand(obj):
     return pps, len(spans)
 
 
-def _solver_probe_kwargs(context, pps: int) -> dict:
+def _solver_kwargs(context, pps: int) -> dict:
     wm = context.window_manager
     return dict(
         points_per_strand=pps,
-        sort_axis=wm.yurameki_solver_probe_sort_axis,
+        sort_axis=wm.yurameki_solver_sort_axis,
         target_length_m=float(wm.yurameki_cylinder_length_cm) * 1.0e-2,
-        axis_step_m=float(wm.yurameki_solver_probe_axis_step_mm) * 1.0e-3,
-        tip_back_m=float(wm.yurameki_solver_probe_tip_back_cm) * 1.0e-2,
     )
 
 
@@ -75,72 +65,83 @@ def _check_hair(context):
     return True, f"Hair Check PASS: {strands} strands, {pps} points per strand"
 
 
-def _export_solver_interface(context):
+def _apply_solver_step(context):
+    from . import cuda_collider
     from . import solver_interface as si
 
     obj = _find_curves_obj()
     if obj is None:
         return False, "Need exactly one Curves object"
+    wm = context.window_manager
+    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
     try:
         pps, _strands = _points_per_strand(obj)
-        path = context.window_manager.yurameki_solver_probe_path.strip()
-        if not path:
-            path = "//yurameki_solver_probe"
-        if not path.lower().endswith(".npz"):
-            path += ".npz"
-        npz_path = bpy.path.abspath(path)
-        json_path = bpy.path.abspath(os.path.splitext(path)[0] + ".json")
-        abs_npz = si.export_probe_data(obj, npz_path, **_solver_probe_kwargs(context, pps))
-        abs_json = si.export_probe_json(obj, json_path, **_solver_probe_kwargs(context, pps))
+        step_index = int(wm.yurameki_solver_step_index)
+        gravity_stats = si.apply_directional_gravity_fk_step(
+            obj,
+            **_solver_kwargs(context, pps),
+            gravity_step_m=float(wm.yurameki_gravity_step_mm) * 1.0e-3,
+            step_index=step_index,
+            gravity_blend_steps=int(wm.yurameki_gravity_blend_steps),
+        )
+        collider_text = "collider skipped"
+        if collider is not None and collider.type == "MESH":
+            collider_result = cuda_collider.apply_capsule_mesh_avoidance(
+                obj,
+                collider,
+                points_per_strand=pps,
+                radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
+                sort_axis=wm.yurameki_solver_sort_axis,
+                cylinder_length_m=float(wm.yurameki_cylinder_length_cm) * 1.0e-2,
+                n_substeps=int(wm.yurameki_collider_substeps),
+                max_move_m=float(wm.yurameki_collider_max_move_mm) * 1.0e-3,
+            )
+            collider_text = (
+                f"hits={collider_result.hit_count}/{collider_result.n_cylinders}, "
+                f"tip_adjust={collider_result.max_tip_adjust_mm:.3f}mm"
+            )
+        wm.yurameki_solver_step_index = step_index + 1
     except Exception as exc:
-        return False, f"Solver interface export failed: {exc!r}"
-    return True, f"Exported solver interface: {abs_npz}; {abs_json}"
-
-
-def _apply_solver_probe_step(context):
-    from . import solver_interface as si
-
-    obj = _find_curves_obj()
-    if obj is None:
-        return False, "Need exactly one Curves object"
-    try:
-        pps, _strands = _points_per_strand(obj)
-        stats = si.apply_probe_step(obj, **_solver_probe_kwargs(context, pps))
-    except Exception as exc:
-        return False, f"Solver probe step failed: {exc!r}"
+        return False, f"Solver step failed: {exc!r}"
+    gx, gy, gz = gravity_stats["gravity_dir"]
     return (
         True,
-        "Probe step applied: "
-        f"{stats['n_strands']} strands, {stats['n_cylinders']} cylinders, "
-        f"max length error {stats['max_len_err_mm']:.6f} mm",
+        f"Solver step {step_index}: "
+        f"gravity=({gx:.2f},{gy:.2f},{gz:.2f}), "
+        f"len_err={gravity_stats['max_len_err_mm']:.6f}mm, "
+        f"fk_tip={gravity_stats['max_tip_displacement_mm']:.3f}mm, "
+        f"{collider_text}",
     )
 
 
-def _apply_fk_root_pull(context):
-    from . import solver_interface as si
+def _settle_hair_to_back(context):
+    from . import initial_groom
 
     obj = _find_curves_obj()
     if obj is None:
         return False, "Need exactly one Curves object"
+    wm = context.window_manager
+    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    if collider is None or collider.type != "MESH":
+        return False, "Set a Mesh collider object first"
     try:
-        wm = context.window_manager
-        pps, _strands = _points_per_strand(obj)
-        stats = si.apply_root_pull_fk_step(
+        stats = initial_groom.settle_hair_back(
             obj,
-            points_per_strand=pps,
-            sort_axis=wm.yurameki_solver_probe_sort_axis,
-            target_length_m=float(wm.yurameki_cylinder_length_cm) * 1.0e-2,
-            root_pull_y_m=float(wm.yurameki_fk_root_pull_y_mm) * 1.0e-3,
+            collider,
+            max_strands=int(wm.yurameki_groom_strands),
+            collision_radius_m=float(wm.yurameki_groom_radius_mm) * 1.0e-3,
+            follow_radius_m=float(wm.yurameki_groom_follow_mm) * 1.0e-3,
+            release_probe_m=float(wm.yurameki_groom_release_mm) * 1.0e-3,
         )
     except Exception as exc:
-        return False, f"FK root pull failed: {exc!r}"
+        return False, f"Settle hair failed: {exc!r}"
     return (
         True,
-        "FK root pull applied: "
-        f"{stats['n_strands']} strands, {stats['n_cylinders']} cylinders, "
-        f"len_err={stats['max_len_err_mm']:.6f}mm, "
-        f"gap={stats['max_chain_gap_mm']:.6f}mm, "
-        f"tip={stats['max_tip_displacement_mm']:.3f}mm",
+        f"Settle Hair Back: strands={stats['processed_strands']}, "
+        f"time={stats['elapsed_sec']:.2f}s, "
+        f"len_err={stats['max_length_error_mm']:.6f}mm, "
+        f"close={stats['remaining_close_points']}, "
+        f"tip_down={stats['avg_tip_down_dot']:.3f}",
     )
 
 
@@ -161,7 +162,7 @@ def _detect_cuda_collider(context):
             collider,
             points_per_strand=pps,
             radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
-            sort_axis=wm.yurameki_solver_probe_sort_axis,
+            sort_axis=wm.yurameki_solver_sort_axis,
             cylinder_length_m=float(wm.yurameki_cylinder_length_cm) * 1.0e-2,
         )
     except Exception as exc:
@@ -170,38 +171,6 @@ def _detect_cuda_collider(context):
         True,
         f"CUDA collider hits: {result.hit_count} / {result.n_cylinders} "
         f"cylinders, triangles={result.n_triangles}",
-    )
-
-
-def _apply_cuda_collider_avoidance(context):
-    from . import cuda_collider
-
-    obj = _find_curves_obj()
-    if obj is None:
-        return False, "Need exactly one Curves object"
-    wm = context.window_manager
-    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
-    if collider is None or collider.type != "MESH":
-        return False, "Set a Mesh collider object first"
-    try:
-        pps, _strands = _points_per_strand(obj)
-        result = cuda_collider.apply_capsule_mesh_avoidance(
-            obj,
-            collider,
-            points_per_strand=pps,
-            radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
-            sort_axis=wm.yurameki_solver_probe_sort_axis,
-            cylinder_length_m=float(wm.yurameki_cylinder_length_cm) * 1.0e-2,
-            n_substeps=int(wm.yurameki_collider_substeps),
-            max_move_m=float(wm.yurameki_collider_max_move_mm) * 1.0e-3,
-        )
-    except Exception as exc:
-        return False, f"CUDA avoidance failed: {exc!r}"
-    return (
-        True,
-        f"CUDA avoidance: hits={result.hit_count}/{result.n_cylinders}, "
-        f"len_err={result.max_length_error_mm:.6f}mm, "
-        f"tip_adjust={result.max_tip_adjust_mm:.3f}mm",
     )
 
 
@@ -218,35 +187,35 @@ class YURAMEKI_OT_check_hair(Operator):
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
-class YURAMEKI_OT_export_solver_interface(Operator):
-    bl_idname = "yurameki.export_solver_interface"
-    bl_label = "Export Solver Interface"
-    bl_description = "Export 1 cm cylinder arrays and fixed solve order"
+class YURAMEKI_OT_apply_solver_step(Operator):
+    bl_idname = "yurameki.apply_solver_step"
+    bl_label = "Apply Solver Step"
+    bl_description = "Apply one long-hair solver step: startup gravity, FK length keep, CUDA collider"
 
     def execute(self, context):
-        ok, message = _export_solver_interface(context)
+        ok, message = _apply_solver_step(context)
         self.report({"INFO"} if ok else {"ERROR"}, message)
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
-class YURAMEKI_OT_apply_solver_probe_step(Operator):
-    bl_idname = "yurameki.apply_solver_probe_step"
-    bl_label = "Apply Probe Step"
-    bl_description = "Apply the length-preserving 1 cm cylinder probe step"
+class YURAMEKI_OT_reset_solver_state(Operator):
+    bl_idname = "yurameki.reset_solver_state"
+    bl_label = "Reset Solver State"
+    bl_description = "Reset the solver step counter so startup gravity begins from +Y again"
 
     def execute(self, context):
-        ok, message = _apply_solver_probe_step(context)
-        self.report({"INFO"} if ok else {"ERROR"}, message)
-        return {"FINISHED"} if ok else {"CANCELLED"}
+        context.window_manager.yurameki_solver_step_index = 0
+        self.report({"INFO"}, "Solver state reset")
+        return {"FINISHED"}
 
 
-class YURAMEKI_OT_apply_fk_root_pull(Operator):
-    bl_idname = "yurameki.apply_fk_root_pull"
-    bl_label = "Apply FK Root Pull"
-    bl_description = "Move only strand roots and rebuild the 1 cm cylinder FK chain"
+class YURAMEKI_OT_settle_hair_to_back(Operator):
+    bl_idname = "yurameki.settle_hair_to_back"
+    bl_label = "Settle Hair Back"
+    bl_description = "Initial groom: use CPU BVH to lay straight long hair behind the body"
 
     def execute(self, context):
-        ok, message = _apply_fk_root_pull(context)
+        ok, message = _settle_hair_to_back(context)
         self.report({"INFO"} if ok else {"ERROR"}, message)
         return {"FINISHED"} if ok else {"CANCELLED"}
 
@@ -269,7 +238,7 @@ class YURAMEKI_OT_pick_collider(Operator):
 class YURAMEKI_OT_detect_cuda_collider(Operator):
     bl_idname = "yurameki.detect_cuda_collider"
     bl_label = "Detect CUDA Collider"
-    bl_description = "Run detection-only CUDA capsule/mesh collider test"
+    bl_description = "Run detection-only CUDA capsule/mesh collider debug check"
 
     def execute(self, context):
         ok, message = _detect_cuda_collider(context)
@@ -277,36 +246,27 @@ class YURAMEKI_OT_detect_cuda_collider(Operator):
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
-class YURAMEKI_OT_apply_cuda_collider_avoidance(Operator):
-    bl_idname = "yurameki.apply_cuda_collider_avoidance"
-    bl_label = "Apply CUDA Avoidance"
-    bl_description = "Move cylinder tips away from the collider on CUDA"
-
-    def execute(self, context):
-        ok, message = _apply_cuda_collider_avoidance(context)
-        self.report({"INFO"} if ok else {"ERROR"}, message)
-        return {"FINISHED"} if ok else {"CANCELLED"}
-
-
 _classes = (
     YURAMEKI_OT_check_hair,
-    YURAMEKI_OT_export_solver_interface,
-    YURAMEKI_OT_apply_solver_probe_step,
-    YURAMEKI_OT_apply_fk_root_pull,
+    YURAMEKI_OT_apply_solver_step,
+    YURAMEKI_OT_reset_solver_state,
+    YURAMEKI_OT_settle_hair_to_back,
     YURAMEKI_OT_pick_collider,
     YURAMEKI_OT_detect_cuda_collider,
-    YURAMEKI_OT_apply_cuda_collider_avoidance,
 )
 
 
 _PROP_NAMES = (
     "yurameki_points_per_strand",
     "yurameki_hair_check_status",
-    "yurameki_solver_probe_path",
-    "yurameki_solver_probe_sort_axis",
-    "yurameki_solver_probe_axis_step_mm",
-    "yurameki_solver_probe_tip_back_cm",
-    "yurameki_fk_root_pull_y_mm",
+    "yurameki_solver_sort_axis",
+    "yurameki_solver_step_index",
+    "yurameki_gravity_step_mm",
+    "yurameki_gravity_blend_steps",
+    "yurameki_groom_strands",
+    "yurameki_groom_radius_mm",
+    "yurameki_groom_follow_mm",
+    "yurameki_groom_release_mm",
     "yurameki_cylinder_length_cm",
     "yurameki_collider_obj",
     "yurameki_collider_radius_mm",
@@ -344,13 +304,7 @@ def register():
             default="Hair not checked",
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_solver_probe_path = StringProperty(
-            name="Solver Probe Path",
-            default="//yurameki_solver_probe.npz",
-            subtype="FILE_PATH",
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_solver_probe_sort_axis = EnumProperty(
+        WindowManager.yurameki_solver_sort_axis = EnumProperty(
             name="Sort Axis",
             items=(
                 ("Z", "Z", "Root ascending by Z"),
@@ -362,35 +316,64 @@ def register():
             default=str(defaults.get("SOLVE_ORDER_AXIS", "Z")),
             options={"SKIP_SAVE"},
         )
+        WindowManager.yurameki_solver_step_index = IntProperty(
+            name="Step",
+            default=0,
+            min=0,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_gravity_step_mm = FloatProperty(
+            name="Gravity Step mm",
+            default=float(defaults.get("GRAVITY_STEP_MM", 1.0)),
+            min=0.0,
+            max=10.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_gravity_blend_steps = IntProperty(
+            name="Y to -Z Steps",
+            default=int(defaults.get("GRAVITY_BLEND_STEPS", 12)),
+            min=0,
+            max=240,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_strands = IntProperty(
+            name="Groom Strands",
+            description="Number of lower-Z root strands to groom; 0 means all strands",
+            default=int(defaults.get("GROOM_STRANDS", 500)),
+            min=0,
+            max=200000,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_radius_mm = FloatProperty(
+            name="Groom Radius mm",
+            default=float(defaults.get("GROOM_RADIUS_MM", 2.5)),
+            min=0.1,
+            max=20.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_follow_mm = FloatProperty(
+            name="Follow mm",
+            default=float(defaults.get("GROOM_FOLLOW_MM", 30.0)),
+            min=1.0,
+            max=200.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_release_mm = FloatProperty(
+            name="Release Probe mm",
+            default=float(defaults.get("GROOM_RELEASE_MM", 20.0)),
+            min=1.0,
+            max=200.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
         WindowManager.yurameki_cylinder_length_cm = FloatProperty(
             name="Cylinder Length cm",
             default=float(defaults.get("CYLINDER_LENGTH_CM", 1.0)),
             min=0.1,
             max=10.0,
-            precision=3,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_solver_probe_axis_step_mm = FloatProperty(
-            name="Y Step mm",
-            default=float(defaults.get("PROBE_AXIS_STEP_MM", 0.5)),
-            min=0.0,
-            max=10.0,
-            precision=3,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_solver_probe_tip_back_cm = FloatProperty(
-            name="Tip Back cm",
-            default=float(defaults.get("PROBE_TIP_BACK_CM", 3.0)),
-            min=0.0,
-            max=30.0,
-            precision=3,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_fk_root_pull_y_mm = FloatProperty(
-            name="Root Pull Y mm",
-            default=float(defaults.get("FK_ROOT_PULL_Y_MM", 0.3)),
-            min=-50.0,
-            max=50.0,
             precision=3,
             options={"SKIP_SAVE"},
         )

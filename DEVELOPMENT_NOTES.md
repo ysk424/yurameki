@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.4.6.
+Current version: 0.4.10.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.4.6.zip`.
+- Latest package: `dist/yurameki-0.4.10.zip`.
 
 ## Verified Before Break
 
@@ -42,7 +42,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.4.6.zip`, then:
+In Blender, install/use `yurameki-0.4.10.zip`, then:
 
 1. Press `Check Hair`.
 2. Use `Apply FK Root Pull` if FK needs a quick sanity check.
@@ -61,3 +61,45 @@ first correctness pass.
 2. Make CUDA collider avoidance visually usable.
 3. Add hair-vs-hair collision using the fixed solve order.
 4. Optimize collider broadphase with CUB radix sort / grid cells.
+
+## Initial groom BVH experiment
+
+The promising initial-groom path is not full simulation.  It places strands one by one from the root using a deterministic curve:
+
+- process lower-root strands in fixed Z order for tests;
+- keep each original segment length exactly;
+- near the root, move briefly toward +Y to escape the face/head;
+- after that, aim mostly down (-Z), producing straight long hair;
+- build a CPU BVH from the evaluated body collider;
+- if a candidate point or segment hits the body, push it to a small clearance;
+- when close to the body, project the desired direction to the body tangent plane so hair can slide along ears/neck/shoulders;
+- do not let it stick forever: probe 2cm downward, and if that path is clear, release from surface sliding back to downward motion;
+- if surface following runs longer than about 3cm, bias outward plus downward to force release.
+
+Best 100-strand test so far:
+
+- collision radius: 2.5mm
+- follow radius: 30mm
+- release probe: 20mm
+- release clearance: 4mm
+- max surface run: 30mm
+- result: length error about 0.000065mm, tip direction dot(-Z) about 0.997
+
+This looks much better around the ear: it can slide on the body briefly, then leave the body and fall vertically instead of sticking to the neck.
+
+## Next topic: hair overlap / stacking
+
+Hair-vs-hair is deliberately not solved in 0.4.10.  Two candidate directions are under consideration:
+
+1. Post-groom lift/stacking correction:
+   - detect visually overlapped regions after body grooming;
+   - lift or offset the upper hair bundle so it stacks cleanly;
+   - hard part: every rod/segment length must remain fixed after the lift.
+
+2. Treat already-placed hair as collision geometry:
+   - process strands in fixed root Z order;
+   - register placed hair into a spatial structure;
+   - detect candidate strand collisions like body collider collisions;
+   - hard part: efficient and stable collision detection for many hair rods.
+
+The current intuition is to test a simple occupancy grid first, because the fixed solve order naturally supports "placed lower hair becomes a soft collider for later hair".

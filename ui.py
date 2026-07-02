@@ -1,4 +1,4 @@
-"""Yurameki CUDA prototype N-panel."""
+"""Yurameki CUDA straight long-hair N-panel."""
 
 from __future__ import annotations
 
@@ -42,34 +42,32 @@ class YURAMEKI_PT_main(Panel):
             col.label(text=status)
 
         box = layout.box()
-        box.label(text="Cylinder Interface")
+        box.label(text="Solver Step")
         col = box.column(align=True)
         col.prop(wm, "yurameki_cylinder_length_cm")
-        col.prop(wm, "yurameki_solver_probe_sort_axis")
-        col.prop(wm, "yurameki_solver_probe_axis_step_mm")
-        col.prop(wm, "yurameki_solver_probe_tip_back_cm")
-        col.prop(wm, "yurameki_solver_probe_path")
-        row = col.row(align=True)
-        row.operator("yurameki.export_solver_interface", icon="EXPORT")
-        row.operator("yurameki.apply_solver_probe_step", icon="FORWARD")
-
-        box = layout.box()
-        box.label(text="FK Chain Test")
-        col = box.column(align=True)
-        col.prop(wm, "yurameki_fk_root_pull_y_mm")
-        col.operator("yurameki.apply_fk_root_pull", icon="CONSTRAINT_BONE")
-
-        box = layout.box()
-        box.label(text="CUDA Collider")
-        col = box.column(align=True)
+        col.prop(wm, "yurameki_solver_sort_axis")
+        col.prop(wm, "yurameki_solver_step_index")
+        col.prop(wm, "yurameki_gravity_step_mm")
+        col.prop(wm, "yurameki_gravity_blend_steps")
+        col.prop(wm, "yurameki_groom_strands")
+        col.prop(wm, "yurameki_groom_radius_mm")
+        col.prop(wm, "yurameki_groom_follow_mm")
+        col.prop(wm, "yurameki_groom_release_mm")
         row = col.row(align=True)
         row.prop(wm, "yurameki_collider_obj")
         row.operator("yurameki.pick_collider", text="", icon="EYEDROPPER")
         col.prop(wm, "yurameki_collider_radius_mm")
         col.prop(wm, "yurameki_collider_substeps")
         col.prop(wm, "yurameki_collider_max_move_mm")
+        row = col.row(align=True)
+        row.operator("yurameki.apply_solver_step", icon="PLAY")
+        row.operator("yurameki.reset_solver_state", icon="LOOP_BACK")
+        col.operator("yurameki.settle_hair_to_back", text="Settle Hair Back", icon="MOD_CLOTH")
+
+        box = layout.box()
+        box.label(text="Debug")
+        col = box.column(align=True)
         col.operator("yurameki.detect_cuda_collider", icon="MOD_PHYSICS")
-        col.operator("yurameki.apply_cuda_collider_avoidance", icon="FORCE_FORCE")
 
 
 _classes = (YURAMEKI_PT_main,)
