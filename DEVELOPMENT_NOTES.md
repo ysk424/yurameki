@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.4.12.
+Current version: 0.4.15.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.4.12.zip`.
+- Latest package: `dist/yurameki-0.4.15.zip`.
 
 ## Verified Before Break
 
@@ -42,7 +42,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.4.12.zip`, then:
+In Blender, install/use `yurameki-0.4.15.zip`, then:
 
 1. Press `Check Hair`.
 2. Use `Apply FK Root Pull` if FK needs a quick sanity check.
@@ -133,3 +133,34 @@ Tomorrow's likely next steps:
 3. Use `Groom Until = 600` to inspect the next layer.
 4. If ears/scalp still fail, improve inside/outside release using a stronger global test such as ray parity or multiple ray directions, not only nearest-normal signed distance.
 5. After body groom is stable, integrate hair-vs-hair stacking from the lateral-only grid experiment.
+
+## 2026-07-04 build note
+
+Current working build: 0.4.13.
+
+What changed:
+
+- `Settle Hair Back` now uses a multi-direction ray parity check to detect points inside the static collider.
+- Head-region penetrations are pushed outward from an approximate head center, with the center shifted downward by the collider's XY head/body width estimate.
+- Penetration pushes try to ray-cast to the outward exit point, then place the hair point just outside by the collision radius.
+- Return stats now include `inside_pushes` and `head_radial_pushes`.
+
+## 2026-07-04 release fix
+
+Current working build: 0.4.14.
+
+What changed:
+
+- Confirmed strand `4718` recalculates exactly to the current scene shape from the backup data.
+- The outward straight segment was caused by `release_path_outside_enough()` requiring the full `Outside mm` clearance before releasing from surface sliding.
+- A release path now only has to stay outside the collider, so a strand returns to gravity direction once the downward probe path is clear and non-penetrating.
+
+## 2026-07-04 upward clamp
+
+Current working build: 0.4.15.
+
+What changed:
+
+- Confirmed strand `512` recalculates exactly to the current scene shape from the backup data.
+- The upward segment was caused by refinement passes reusing `new[j + 1] - new[j]` even when that existing segment pointed upward.
+- Refinement desired directions now clamp upward segments back to `_base_drop_direction()`.

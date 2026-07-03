@@ -110,6 +110,21 @@ def settle_hair_back(
         for i in range(n_total)
     ]
     bvh = _body_bvh(collider_obj)
+    bbox_world = [collider_obj.matrix_world @ Vector(corner) for corner in collider_obj.bound_box]
+    bbox_min = Vector((
+        min(point.x for point in bbox_world),
+        min(point.y for point in bbox_world),
+        min(point.z for point in bbox_world),
+    ))
+    bbox_max = Vector((
+        max(point.x for point in bbox_world),
+        max(point.y for point in bbox_world),
+        max(point.z for point in bbox_world),
+    ))
+    bbox_center = (bbox_min + bbox_max) * 0.5
+    head_xy_extent = max(bbox_max.x - bbox_min.x, bbox_max.y - bbox_min.y)
+    head_push_center = Vector((bbox_center.x, bbox_center.y, bbox_center.z - head_xy_extent))
+    head_region_min_z = head_push_center.z
 
     root_entries = [(world_pts[start].z, si) for si, (start, _count) in enumerate(spans)]
     root_entries.sort(key=lambda item: (item[0], item[1]))
@@ -127,6 +142,8 @@ def settle_hair_back(
         "forced_release_events": 0,
         "ray_hits": 0,
         "nearest_pushes": 0,
+        "inside_pushes": 0,
+        "head_radial_pushes": 0,
         "sample_pushes": 0,
         "remaining_close_points": 0,
         "changed_points": 0,
@@ -150,9 +167,11 @@ def settle_hair_back(
     def release_path_outside_enough(point: Vector, direction: Vector) -> bool:
         # A single endpoint can be outside while the path still cuts behind an
         # ear/scalp feature.  Check the whole short release path instead.
+        # Release means "not penetrating"; requiring the full outside clearance
+        # here keeps hair sliding outward even after the downward path is clear.
         for factor in (0.25, 0.5, 0.75, 1.0):
             sample = point + direction * (release_probe_m * factor)
-            if signed_outside_distance(sample) < outside_clearance_m:
+            if signed_outside_distance(sample) < 0.0:
                 return False
         return True
 
@@ -163,6 +182,78 @@ def settle_hair_back(
             if loc is not None and dist is not None and 0.0002 < dist <= distance:
                 return False
         return True
+
+    def point_inside_collider(point: Vector) -> bool:
+        # Count intersections in several directions. A majority vote avoids
+        # edge/vertex grazing cases that make a single parity ray unreliable.
+        max_span = max(
+            bbox_max.x - bbox_min.x,
+            bbox_max.y - bbox_min.y,
+            bbox_max.z - bbox_min.z,
+            0.1,
+        )
+        ray_distance = max_span * 3.0
+        votes = 0
+        for direction in (
+            Vector((1.0, 0.0, 0.0)),
+            Vector((0.0, 1.0, 0.0)),
+            Vector((0.0, 0.0, 1.0)),
+        ):
+            origin = point + direction * 1.0e-5
+            count = 0
+            travelled = 0.0
+            while travelled < ray_distance:
+                hit = bvh.ray_cast(origin, direction, ray_distance - travelled)
+                if hit is None:
+                    break
+                loc, _normal, _index, dist = hit
+                if loc is None or dist is None:
+                    break
+                step = max(float(dist), 1.0e-5)
+                travelled += step
+                count += 1
+                origin = loc + direction * 1.0e-5
+                travelled += 1.0e-5
+            if count % 2 == 1:
+                votes += 1
+        return votes >= 2
+
+    def head_radial_direction(point: Vector) -> Vector:
+        direction = point - head_push_center
+        direction.z = max(direction.z, 0.0)
+        if direction.length <= 1.0e-7:
+            direction = point - bbox_center
+        if direction.length <= 1.0e-7:
+            direction = BACK.copy()
+        direction.normalize()
+        return direction
+
+    def push_direction(point: Vector, normal: Vector | None) -> Vector:
+        if point.z >= head_region_min_z:
+            stats["head_radial_pushes"] += 1
+            return head_radial_direction(point)
+        if normal is not None and normal.length > 1.0e-7:
+            return normal.normalized()
+        direction = point - bbox_center
+        if direction.length <= 1.0e-7:
+            direction = BACK.copy()
+        direction.normalize()
+        return direction
+
+    def pushed_out_point(point: Vector, normal: Vector | None, min_push: float) -> Vector:
+        push_dir = push_direction(point, normal)
+        max_span = max(
+            bbox_max.x - bbox_min.x,
+            bbox_max.y - bbox_min.y,
+            bbox_max.z - bbox_min.z,
+            0.1,
+        )
+        hit = bvh.ray_cast(point + push_dir * 1.0e-5, push_dir, max_span * 3.0)
+        if hit is not None:
+            loc, _normal, _index, dist = hit
+            if loc is not None and dist is not None and dist >= 0.0:
+                return loc + push_dir * collision_radius_m
+        return point + push_dir * max(min_push, collision_radius_m)
 
     def release_direction_if_safe(point: Vector):
         down_ray = ray_clear(point, DOWN, release_probe_m)
@@ -209,7 +300,7 @@ def settle_hair_back(
             return desired_dir, 0.0, False
 
         release_dir, released = release_direction_if_safe(point)
-        if released and (surface_run > collision_radius_m or release_dir.dot(normal) > -0.25):
+        if released:
             return release_dir, 0.0, False
 
         slide = _project_to_tangent(desired_dir, normal)
@@ -248,37 +339,68 @@ def settle_hair_back(
                         and dist is not None
                         and 0.0002 < dist <= move_len + collision_radius_m
                     ):
-                        normal = normal.normalized()
-                        slide = _project_to_tangent(direction, normal)
-                        candidate = loc + normal * collision_radius_m + slide * max(0.0, seg_len - dist)
+                        push_dir = push_direction(loc, normal)
+                        slide = _project_to_tangent(direction, push_dir)
+                        candidate = loc + push_dir * collision_radius_m + slide * max(0.0, seg_len - dist)
                         v = candidate - prev
                         candidate = prev + (v.normalized() if v.length > 1.0e-9 else fallback_dir) * seg_len
                         stats["ray_hits"] += 1
+
+            if point_inside_collider(candidate):
+                candidate = pushed_out_point(candidate, None, collision_radius_m)
+                v = candidate - prev
+                candidate = prev + (v.normalized() if v.length > 1.0e-9 else fallback_dir) * seg_len
+                stats["inside_pushes"] += 1
 
             nearest = bvh.find_nearest(candidate, follow_radius_m)
             if nearest is not None:
                 loc, normal, _index, dist = nearest
                 if loc is not None and normal is not None and dist is not None:
                     stats["min_clearance_m"] = min(stats["min_clearance_m"], float(dist))
-                    if dist < collision_radius_m:
-                        normal = normal.normalized()
-                        tangent = _project_to_tangent(candidate - prev, normal)
-                        candidate = loc + normal * collision_radius_m + tangent * 0.0005
+                    inside = point_inside_collider(candidate)
+                    if inside or dist < collision_radius_m:
+                        push_dir = push_direction(candidate if inside else loc, normal)
+                        tangent = _project_to_tangent(candidate - prev, push_dir)
+                        if inside:
+                            candidate = pushed_out_point(candidate, normal, collision_radius_m) + tangent * 0.0005
+                        else:
+                            push_distance = collision_radius_m - dist
+                            candidate = candidate + push_dir * max(push_distance, collision_radius_m * 0.5)
+                            candidate = candidate + tangent * 0.0005
                         v = candidate - prev
                         candidate = prev + (v.normalized() if v.length > 1.0e-9 else fallback_dir) * seg_len
-                        stats["nearest_pushes"] += 1
+                        if inside:
+                            stats["inside_pushes"] += 1
+                        else:
+                            stats["nearest_pushes"] += 1
 
             mid = prev.lerp(candidate, 0.5)
+            if point_inside_collider(mid):
+                candidate = pushed_out_point(mid, None, collision_radius_m)
+                v = candidate - prev
+                candidate = prev + (v.normalized() if v.length > 1.0e-9 else fallback_dir) * seg_len
+                stats["inside_pushes"] += 1
+                mid = prev.lerp(candidate, 0.5)
+
             nearest_mid = bvh.find_nearest(mid, follow_radius_m)
             if nearest_mid is not None:
-                _loc, normal, _index, dist = nearest_mid
+                loc, normal, _index, dist = nearest_mid
                 if normal is not None and dist is not None:
                     stats["min_clearance_m"] = min(stats["min_clearance_m"], float(dist))
-                    if dist < collision_radius_m:
-                        candidate = candidate + normal.normalized() * (collision_radius_m - dist)
+                    inside = point_inside_collider(mid)
+                    if inside or dist < collision_radius_m:
+                        push_dir = push_direction(mid if inside else loc, normal)
+                        if inside:
+                            candidate = pushed_out_point(mid, normal, collision_radius_m)
+                        else:
+                            push_distance = collision_radius_m - dist
+                            candidate = candidate + push_dir * max(push_distance, collision_radius_m * 0.5)
                         v = candidate - prev
                         candidate = prev + (v.normalized() if v.length > 1.0e-9 else fallback_dir) * seg_len
-                        stats["sample_pushes"] += 1
+                        if inside:
+                            stats["inside_pushes"] += 1
+                        else:
+                            stats["sample_pushes"] += 1
         v = candidate - prev
         if v.length > 1.0e-9:
             return prev + v.normalized() * seg_len
@@ -310,6 +432,8 @@ def settle_hair_back(
                     direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 else:
                     direction.normalize()
+                    if direction.z > 0.0:
+                        direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 direction, surface_run, in_surface = choose_direction(new[j], direction, surface_run)
                 if not in_surface:
                     surface_run = 0.0
@@ -324,6 +448,9 @@ def settle_hair_back(
             stats["max_move_m"] = max(stats["max_move_m"], (new[j] - old[j]).length)
             world_pts[idx] = new[j]
             stats["changed_points"] += 1
+            if point_inside_collider(new[j]):
+                stats["remaining_close_points"] += 1
+                continue
             nearest = bvh.find_nearest(new[j], follow_radius_m)
             if nearest is not None:
                 _loc, _normal, _index, dist = nearest
@@ -359,6 +486,8 @@ def settle_hair_back(
         "forced_release_events": int(stats["forced_release_events"]),
         "ray_hits": int(stats["ray_hits"]),
         "nearest_pushes": int(stats["nearest_pushes"]),
+        "inside_pushes": int(stats["inside_pushes"]),
+        "head_radial_pushes": int(stats["head_radial_pushes"]),
         "sample_pushes": int(stats["sample_pushes"]),
         "remaining_close_points": int(stats["remaining_close_points"]),
         "min_clearance_mm": None if stats["min_clearance_m"] == 999.0 else stats["min_clearance_m"] * 1000.0,
