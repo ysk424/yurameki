@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.4.15.
+Current version: 0.4.16.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.4.15.zip`.
+- Latest package: `dist/yurameki-0.4.16.zip`.
 
 ## Verified Before Break
 
@@ -42,7 +42,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.4.15.zip`, then:
+In Blender, install/use `yurameki-0.4.16.zip`, then:
 
 1. Press `Check Hair`.
 2. Use `Apply FK Root Pull` if FK needs a quick sanity check.
@@ -164,3 +164,12 @@ What changed:
 - Confirmed strand `512` recalculates exactly to the current scene shape from the backup data.
 - The upward segment was caused by refinement passes reusing `new[j + 1] - new[j]` even when that existing segment pointed upward.
 - Refinement desired directions now clamp upward segments back to `_base_drop_direction()`.
+
+## 2026-07-04 weak-downward clamp
+
+Current working build: 0.4.16.
+
+What changed:
+
+- Reviewed the same refinement path for remaining straight-line carryover after collider avoidance.
+- Refinement desired directions now clamp when `direction.z > -0.35`, catching upward, horizontal, and weakly downward carryover directions.

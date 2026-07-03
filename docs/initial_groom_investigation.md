@@ -37,13 +37,12 @@ then change only the code path that demonstrably produced the bad shape.
 - Fix: refinement desired directions now reset upward segments to
   `_base_drop_direction()`.
 
-## Known Follow-Up Risk
+## Follow-Up Fix
 
-Version `0.4.15` still only clamps strictly upward refinement directions.
-Nearly horizontal or weakly downward directions can still be reused by the
-refinement pass if `choose_direction()` returns the desired direction unchanged
-because the collider is far away, missing, or has no valid normal.
+Version `0.4.15` only clamped strictly upward refinement directions. Nearly
+horizontal or weakly downward directions could still be reused by the refinement
+pass if `choose_direction()` returned the desired direction unchanged because
+the collider was far away, missing, or had no valid normal.
 
-The next targeted fix should clamp weak downward refinement directions too, for
-example by resetting directions with `direction.z > -0.35` to
-`_base_drop_direction()`.
+Version `0.4.16` extends the clamp to `direction.z > -0.35`, resetting upward,
+horizontal, and weakly downward refinement directions to `_base_drop_direction()`.

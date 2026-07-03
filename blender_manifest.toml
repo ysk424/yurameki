@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.4.15"
+version = "0.4.16"
 name = "Yurameki"
 tagline = "Yurameki (揺らめき) — CUDA hair solver prototype"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"

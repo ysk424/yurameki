@@ -432,7 +432,7 @@ def settle_hair_back(
                     direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 else:
                     direction.normalize()
-                    if direction.z > 0.0:
+                    if direction.z > -0.35:
                         direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 direction, surface_run, in_surface = choose_direction(new[j], direction, surface_run)
                 if not in_surface:
