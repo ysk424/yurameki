@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.4.16.
+Current version: 0.4.17.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.4.16.zip`.
+- Latest package: `dist/yurameki-0.4.17.zip`.
 
 ## Verified Before Break
 
@@ -42,7 +42,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.4.16.zip`, then:
+In Blender, install/use `yurameki-0.4.17.zip`, then:
 
 1. Press `Check Hair`.
 2. Use `Apply FK Root Pull` if FK needs a quick sanity check.
@@ -173,3 +173,12 @@ What changed:
 
 - Reviewed the same refinement path for remaining straight-line carryover after collider avoidance.
 - Refinement desired directions now clamp when `direction.z > -0.35`, catching upward, horizontal, and weakly downward carryover directions.
+
+## 2026-07-04 far-collider refinement reset
+
+Current working build: 0.4.17.
+
+What changed:
+
+- Refinement passes now reset the desired direction to `_base_drop_direction()` when the current point is outside the collider follow radius or the nearest collider query is incomplete.
+- This makes the intended behavior explicit: once the hair is clear of the collider, it should return to the falling curve instead of preserving an old avoidance direction.

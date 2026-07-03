@@ -44,5 +44,10 @@ horizontal or weakly downward directions could still be reused by the refinement
 pass if `choose_direction()` returned the desired direction unchanged because
 the collider was far away, missing, or had no valid normal.
 
-Version `0.4.16` extends the clamp to `direction.z > -0.35`, resetting upward,
+Version `0.4.16` extended the clamp to `direction.z > -0.35`, resetting upward,
 horizontal, and weakly downward refinement directions to `_base_drop_direction()`.
+
+Version `0.4.17` makes the cleaner rule explicit: if a refinement point is no
+longer within the collider follow radius, or the nearest collider query is
+incomplete, the desired direction is reset to `_base_drop_direction()` instead
+of preserving the previous avoidance direction.
