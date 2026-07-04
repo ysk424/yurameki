@@ -70,6 +70,46 @@ collider normal sign, but still place the locked root rod along the oriented
 collider normal.  Do not reintroduce the direct source-direction root lock
 without a separate proof that it reduces penetration on the scalp test scene.
 
+## 0.5.12 root bend investigation
+
+An eye-side debug Empty was placed near a visible raised hair patch.  The nearest
+representative strand was `3411`; nearby strands included `2682`, `4021`,
+`1665`, and `102`.  These strands were not inside the filled body proxy by
+parity check, and their segments did not ray-hit the proxy.  The issue was not
+collider penetration or solve order: root-Z order was correct.
+
+The visible difference was the bend between cylinder 0 and cylinder 1.  The
+raised patch had a cylinder-0-to-cylinder-1 angle of about `24-27 degrees`.
+Nearby lower comparison strands such as `3716`, `4547`, `2874`, and `2042`
+were at the existing `1 radian` turn limit, about `57.3 degrees`.
+
+Measured examples:
+
+```text
+strand 3411: old angle 24.56 deg, A preview 57.30 deg, p2 move 9.56 mm
+strand 2682: old angle 24.60 deg, A preview 57.30 deg, p2 move 9.57 mm
+strand 102:  old angle 26.48 deg, A preview 57.30 deg, p2 move 9.03 mm
+
+OK 3716: old angle 57.30 deg, A preview 57.30 deg, p2 move 0.00 mm
+OK 4547: old angle 57.30 deg, A preview 57.30 deg, p2 move 0.00 mm
+OK 2874: old angle 57.30 deg, A preview 57.30 deg, p2 move 0.00 mm
+```
+
+The rejected alternatives were:
+
+- lowering the cylinder-1 emergence blend weight globally: this changed the OK
+  comparison strands by roughly `5-15 degrees`;
+- clamping only the original direction's upward Z: this changed OK comparison
+  strands even more;
+- adding a new minimum-angle rule: it worked, but introduced a new rule instead
+  of using the existing turn limiter.
+
+The accepted 0.5.12 change is the minimal "A" behavior: only cylinder 0 keeps
+the protected source-emergence direction.  Cylinder 1 returns to the normal
+back/down groom direction and is then limited by the existing `1 radian` turn
+limit.  This changed the raised patch in the preview while leaving already-OK
+comparison strands unchanged.
+
 ## Rejected 0.5.6 final-guard experiment
 
 After 0.5.5, a bounded fixed-length sphere search was tested as a final-guard

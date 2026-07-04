@@ -116,7 +116,11 @@ existing groom heuristics unchanged.
 The 0.5.12 package keeps root emergence protection only on cylinder 0. Cylinder
 1 now returns to the normal back/down groom direction, so the first bend can use
 the existing 1 radian turn limit instead of preserving an upward source
-emergence direction for two rods.
+emergence direction for two rods. This was chosen after comparing a raised
+eye-side patch with nearby lower roots: the raised patch had only about
+`24-27 degrees` between cylinders 0 and 1, while the OK comparison strands were
+already at the `57.3 degree` turn limit. The 0.5.12 preview changed the raised
+strands and left the OK comparison strands unchanged.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.
