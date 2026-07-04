@@ -216,11 +216,12 @@ def settle_hair_back(
     def release_path_outside_enough(point: Vector, direction: Vector) -> bool:
         # A single endpoint can be outside while the path still cuts behind an
         # ear/scalp feature.  Check the whole short release path instead.
-        # Release means "not penetrating"; requiring a larger outside clearance
-        # here keeps hair sliding outward after the downward path is already clear.
+        # Release requires visual clearance, not just non-penetration. Otherwise
+        # a shallow outside path can look like it cuts through the skin.
+        min_clearance = max(0.0, float(release_clearance_m))
         for factor in (0.25, 0.5, 0.75, 1.0):
             sample = point + direction * (release_probe_m * factor)
-            if signed_outside_distance(sample) < 0.0:
+            if signed_outside_distance(sample) < min_clearance:
                 return False
         return True
 

@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.12.
+Current version: 0.5.13.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.12.zip`.
+- Latest package: `dist/yurameki-0.5.13.zip`.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -34,6 +34,10 @@ it becomes useful.
   returns to the normal back/down groom curve so it can bend by the existing
   `1 radian` turn limit instead of carrying an upward source emergence
   direction.
+- Surface release now requires the internal `release_clearance_m` along the
+  release probe path instead of accepting any non-negative outside distance.
+  This keeps shallow outside paths from visually cutting through the skin after
+  `back_down` release.
 - When a valid head-region collider normal is found, rod 1 is now locked as a
   scalp-emergence anchor: point 0 remains the root and point 1 is placed one
   segment length along the oriented collider normal. Later settle/refinement
@@ -110,6 +114,32 @@ back/down groom direction and is then limited by the existing `1 radian` turn
 limit.  This changed the raised patch in the preview while leaving already-OK
 comparison strands unchanged.
 
+## 0.5.13 shallow release investigation
+
+A later forehead/skin-edge Empty marked strands that visually ran from upper
+right to lower left across the skin and then returned outward.  Representative
+strands included `377`, `542`, `1352`, `3595`, and `786`.  Parity and segment
+ray checks against both `CC_Base_Body` and `CC_Base_Body_yurameki_proxy` found
+no actual inside points or ray-hit penetration.  The closest samples were
+outside but shallow, around `0.3-4 mm` from the surface.
+
+The repeated direction on the marked segments was
+`(0.0, 0.5524, -0.8336)`, matching the internal `back_down` release direction.
+The old release test only required non-negative signed outside distance along
+the probe.  A preview of the new clearance rule showed representative old-OK
+release probes that become blocked by requiring `4 mm` clearance:
+
+```text
+strand 377 j4 back_down: min probe clearance 0.385 mm
+strand 542 j3 back_down: min probe clearance 2.709 mm
+strand 1352 j4 back_down: min probe clearance 0.674 mm
+strand 786 j6 back_down: min probe clearance 1.176 mm
+```
+
+The 0.5.13 change makes `release_path_outside_enough()` use the existing
+`release_clearance_m` parameter, so release means visually clear rather than
+merely outside.
+
 ## Rejected 0.5.6 final-guard experiment
 
 After 0.5.5, a bounded fixed-length sphere search was tested as a final-guard
@@ -150,7 +180,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.12.zip`, then:
+In Blender, install/use `yurameki-0.5.13.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Collider`.

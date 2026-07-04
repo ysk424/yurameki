@@ -1,9 +1,9 @@
-# Yurameki 0.5.12
+# Yurameki 0.5.13
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.12 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.13 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -121,6 +121,11 @@ eye-side patch with nearby lower roots: the raised patch had only about
 `24-27 degrees` between cylinders 0 and 1, while the OK comparison strands were
 already at the `57.3 degree` turn limit. The 0.5.12 preview changed the raised
 strands and left the OK comparison strands unchanged.
+
+The 0.5.13 package makes surface release require the existing internal
+`release_clearance_m` instead of only checking that probe samples are outside
+the collider. This keeps shallow outside paths from being accepted when they are
+visually too close to the skin.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.
