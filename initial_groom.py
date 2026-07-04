@@ -18,7 +18,7 @@ from mathutils.bvhtree import BVHTree
 
 BACK = Vector((0.0, 1.0, 0.0))
 DOWN = Vector((0.0, 0.0, -1.0))
-LOWER_FREE_GROOM_Z = 1.30
+LOWER_FREE_GROOM_Z = 1.42
 
 
 def _curve_spans(curves_data):
