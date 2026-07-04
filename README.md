@@ -1,9 +1,9 @@
-# Yurameki 0.5.14
+# Yurameki 0.5.15
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.14 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.15 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -41,11 +41,12 @@ length in FK order, resolves the moving Mesh collider through CUDA capsule/mesh
 avoidance, buffers every simulated frame in memory, then bakes Curves `position`
 keyframes after computation completes.
 
-`Check` validates both the Curves object and selected Mesh collider, then builds
-a filled collider proxy. The proxy keeps the source object's modifiers but uses
-its own mesh copy with boundary holes filled, so parity-based inside/outside
-tests can treat the collider as closed. Later collider operations prefer this
-proxy when it is available.
+`Check` validates the Curves object, Body mesh, and optional Clothes mesh, then
+builds a filled Body collider proxy. The proxy keeps the source object's
+modifiers but uses its own mesh copy with boundary holes filled, so
+parity-based inside/outside tests can treat the Body collider as closed. Later
+collider operations prefer this proxy when it is available and add the Clothes
+mesh as a second collider source.
 `Detect CUDA Collider` is the preparation/check step before simulation.
 
 The current subframe metric is the world-space movement of the last root in
@@ -132,9 +133,14 @@ the generated collider proxy before hole filling. The source body mesh is not
 changed. This intentionally sacrifices ear collision in favor of cleaner hair
 shaping around the sides of the head.
 
-The neck-up groom is accepted for this phase. The next pass will add a Clothes
-collider alongside the current Body collider, with the top input area organized
-as Hair, Body, and Clothes fields.
+The neck-up groom is accepted for this phase. Collider setup now continues with
+a Clothes collider alongside the current Body collider, with the top input area
+organized as Hair, Body, and Clothes fields.
+
+The 0.5.15 package adds that Hair/Body/Clothes input layout. The old generic
+Collider field is now the Body field, and Clothes is an optional second Mesh
+collider included in initial groom, CUDA detection, solver step, and gravity
+bake collision input.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

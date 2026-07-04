@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.14.
+Current version: 0.5.15.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.14.zip`.
+- Latest package: `dist/yurameki-0.5.15.zip`.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -42,6 +42,9 @@ it becomes useful.
   from the generated collider proxy before boundary holes are filled. This is a
   grooming-first tradeoff: ear collisions may be ignored, but side hair should
   no longer be pushed outward by ear geometry.
+- The top input area now has explicit Hair, Body, and Clothes fields. The old
+  generic Mesh collider is the Body collider. Clothes is optional and is added
+  as a second evaluated Mesh collider in the body collision path.
 - When a valid head-region collider normal is found, rod 1 is now locked as a
   scalp-emergence anchor: point 0 remains the root and point 1 is placed one
   segment length along the oriented collider normal. Later settle/refinement
@@ -206,14 +209,15 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.14.zip`, then:
+In Blender, install/use `yurameki-0.5.15.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
-2. Press `Pick Collider`.
+2. Press `Pick Body`.
 3. Press `Check`; it validates Curves hair and builds the filled collider proxy.
-4. Press `Detect CUDA Collider`; this is the preparation/check step.
-5. Set `Start Frame` and `End Frame`.
-6. Press `Simulate Gravity` to compute the frame range in memory and bake
+4. Optionally select a clothes mesh and press `Pick Clothes`.
+5. Press `Detect CUDA Collider`; this is the preparation/check step.
+6. Set `Start Frame` and `End Frame`.
+7. Press `Simulate Gravity` to compute the frame range in memory and bake
    Curves position keyframes after completion.
 
 Important: broadphase uniform grid is not implemented yet.  The current CUDA
@@ -222,16 +226,13 @@ first correctness pass.
 
 ## Intended Order
 
-1. Add a three-slot input area at the top of the panel: Hair, Body, Clothes.
-2. Treat the current Mesh collider field as the Body collider.
-3. Add the Clothes collider to the body collision path.
-4. Add hair-vs-hair collision using the fixed solve order.
-5. Optimize collider broadphase with CUB radix sort / grid cells.
+1. Validate the Clothes collider workflow on the accepted neck-up groom.
+2. Add hair-vs-hair collision using the fixed solve order.
+3. Optimize collider broadphase with CUB radix sort / grid cells.
 
-## Next UI Step
+## 0.5.15 Clothes Collider Input
 
-The next implementation pass should reorganize the top input area.  It should
-show three object fields with eyedropper pick buttons:
+The top input area now shows three object fields with eyedropper pick buttons:
 
 ```text
 Hair    -> current Curves hair input
@@ -239,9 +240,10 @@ Body    -> current Mesh collider input
 Clothes -> new Mesh clothes collider input
 ```
 
-The existing `yurameki_collider_obj` should become the Body field rather than a
-generic collider field.  Clothes collision can then be added as a second
-collider source while preserving the current body/proxy behavior.
+The existing `yurameki_collider_obj` is kept internally for compatibility, but
+its UI label is now Body.  The new `yurameki_clothes_obj` field is optional.
+Collision calls receive Body proxy plus Clothes mesh as a list, and both CPU BVH
+and CUDA triangle extraction merge the evaluated meshes before collision tests.
 
 ## 0.5.0 gravity bake
 

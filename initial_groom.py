@@ -42,6 +42,25 @@ def _ensure_backup(curves_obj):
 
 
 def _body_bvh(collider_obj):
+    if isinstance(collider_obj, (list, tuple)):
+        vertices = []
+        polygons = []
+        offset = 0
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        for obj in collider_obj:
+            if obj is None or obj.type != "MESH":
+                continue
+            obj_eval = obj.evaluated_get(depsgraph)
+            mesh = obj_eval.to_mesh()
+            try:
+                vertices.extend(obj_eval.matrix_world @ vertex.co for vertex in mesh.vertices)
+                polygons.extend(tuple(int(index) + offset for index in poly.vertices) for poly in mesh.polygons)
+                offset += len(mesh.vertices)
+            finally:
+                obj_eval.to_mesh_clear()
+        if not vertices or not polygons:
+            raise ValueError("collider list has no mesh polygons")
+        return BVHTree.FromPolygons(vertices, polygons)
     depsgraph = bpy.context.evaluated_depsgraph_get()
     obj_eval = collider_obj.evaluated_get(depsgraph)
     mesh = obj_eval.to_mesh()
@@ -119,7 +138,10 @@ def settle_hair_back(
 ) -> dict:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
-    if collider_obj is None or collider_obj.type != "MESH":
+    if isinstance(collider_obj, (list, tuple)):
+        if not any(obj is not None and obj.type == "MESH" for obj in collider_obj):
+            raise ValueError("expected at least one Mesh collider")
+    elif collider_obj is None or collider_obj.type != "MESH":
         raise ValueError("expected one Mesh collider")
 
     start_time = time.perf_counter()
@@ -153,7 +175,13 @@ def settle_hair_back(
         root_outward_dirs.append(direction)
 
     bvh = _body_bvh(collider_obj)
-    bbox_world = [collider_obj.matrix_world @ Vector(corner) for corner in collider_obj.bound_box]
+    collider_objs = list(collider_obj) if isinstance(collider_obj, (list, tuple)) else [collider_obj]
+    bbox_world = [
+        obj.matrix_world @ Vector(corner)
+        for obj in collider_objs
+        if obj is not None and obj.type == "MESH"
+        for corner in obj.bound_box
+    ]
     bbox_min = Vector((
         min(point.x for point in bbox_world),
         min(point.y for point in bbox_world),

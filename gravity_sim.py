@@ -66,7 +66,10 @@ def prepare_gravity_sim(curves_obj, collider_obj, points_per_strand: int,
                         ) -> dict:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
-    if collider_obj is None or collider_obj.type != "MESH":
+    if isinstance(collider_obj, (list, tuple)):
+        if not any(obj is not None and obj.type == "MESH" for obj in collider_obj):
+            raise ValueError("expected at least one Mesh collider")
+    elif collider_obj is None or collider_obj.type != "MESH":
         raise ValueError("expected one Mesh collider")
     pps, strands = _points_per_strand(curves_obj, require_uniform=False)
     if pps != int(points_per_strand):
@@ -96,7 +99,10 @@ def simulate_gravity_bake(curves_obj, collider_obj, points_per_strand: int,
                           collider_max_move_m: float = 0.001) -> GravityBakeStats:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
-    if collider_obj is None or collider_obj.type != "MESH":
+    if isinstance(collider_obj, (list, tuple)):
+        if not any(obj is not None and obj.type == "MESH" for obj in collider_obj):
+            raise ValueError("expected at least one Mesh collider")
+    elif collider_obj is None or collider_obj.type != "MESH":
         raise ValueError("expected one Mesh collider")
     start_frame = int(start_frame)
     end_frame = int(end_frame)

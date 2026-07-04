@@ -12,5 +12,6 @@
     "COLLIDER_SUBSTEPS": 8,
     "COLLIDER_MAX_MOVE_MM": 1.0,
     "CURVES_OBJECT": "",
-    "COLLIDER_OBJECT": ""
+    "COLLIDER_OBJECT": "",
+    "CLOTHES_OBJECT": ""
 }

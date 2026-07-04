@@ -56,23 +56,40 @@ def _solver_kwargs(context, pps: int) -> dict:
     )
 
 
-def _source_collider(context):
+def _source_body_collider(context):
     wm = context.window_manager
     collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
     return collider if collider is not None and collider.type == "MESH" else None
 
 
-def _compute_collider(context):
+def _source_clothes_collider(context):
+    wm = context.window_manager
+    name = getattr(wm, "yurameki_clothes_obj", "").strip()
+    collider = bpy.data.objects.get(name)
+    return collider if collider is not None and collider.type == "MESH" else None
+
+
+def _compute_colliders(context):
     from . import collider_proxy
 
-    source = _source_collider(context)
+    source = _source_body_collider(context)
     if source is None:
-        return None
+        return []
     proxy = collider_proxy.get_valid_proxy(
         source,
         getattr(context.window_manager, "yurameki_collider_proxy_obj", ""),
     )
-    return proxy if proxy is not None else source
+    colliders = [proxy if proxy is not None else source]
+    clothes = _source_clothes_collider(context)
+    if clothes is not None:
+        colliders.append(clothes)
+    return colliders
+
+
+def _collider_label(colliders) -> str:
+    if not colliders:
+        return "collider skipped"
+    return "+".join(obj.name for obj in colliders)
 
 
 def _check_hair(context):
@@ -81,9 +98,10 @@ def _check_hair(context):
     obj = _find_curves_obj(context)
     if obj is None:
         return False, "Pick one Hair Curves object"
-    collider = _source_collider(context)
+    collider = _source_body_collider(context)
     if collider is None:
-        return False, "Check failed: set a Mesh collider object first"
+        return False, "Check failed: set a Body mesh first"
+    clothes = _source_clothes_collider(context)
     try:
         pps, strands = _points_per_strand(obj)
         proxy_stats = collider_proxy.build_filled_proxy(
@@ -105,7 +123,8 @@ def _check_hair(context):
         f"proxy={proxy_stats['proxy_name']}, "
         f"filled={proxy_stats['faces_added']} faces, "
         f"ears={proxy_stats.get('ear_faces_removed', 0)}, "
-        f"boundary={proxy_stats['boundary_edges_after']}",
+        f"boundary={proxy_stats['boundary_edges_after']}, "
+        f"clothes={clothes.name if clothes is not None else 'none'}",
     )
 
 
@@ -117,7 +136,7 @@ def _apply_solver_step(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = _compute_collider(context)
+    colliders = _compute_colliders(context)
     try:
         pps, _strands = _points_per_strand(obj)
         step_index = int(wm.yurameki_solver_step_index)
@@ -129,10 +148,10 @@ def _apply_solver_step(context):
             gravity_blend_steps=int(wm.yurameki_gravity_blend_steps),
         )
         collider_text = "collider skipped"
-        if collider is not None and collider.type == "MESH":
+        if colliders:
             collider_result = cuda_collider.apply_capsule_mesh_avoidance(
                 obj,
-                collider,
+                colliders,
                 points_per_strand=pps,
                 radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
                 sort_axis=wm.yurameki_solver_sort_axis,
@@ -142,7 +161,8 @@ def _apply_solver_step(context):
             )
             collider_text = (
                 f"hits={collider_result.hit_count}/{collider_result.n_cylinders}, "
-                f"tip_adjust={collider_result.max_tip_adjust_mm:.3f}mm"
+                f"tip_adjust={collider_result.max_tip_adjust_mm:.3f}mm, "
+                f"colliders={_collider_label(colliders)}"
             )
         wm.yurameki_solver_step_index = step_index + 1
     except Exception as exc:
@@ -165,13 +185,13 @@ def _settle_hair_to_back(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = _compute_collider(context)
-    if collider is None or collider.type != "MESH":
-        return False, "Set a Mesh collider object first"
+    colliders = _compute_colliders(context)
+    if not colliders:
+        return False, "Set a Body mesh first"
     try:
         stats = initial_groom.settle_hair_back(
             obj,
-            collider,
+            colliders,
             max_strands=0,
             collision_radius_m=float(wm.yurameki_groom_radius_mm) * 1.0e-3,
             follow_radius_m=float(wm.yurameki_groom_follow_mm) * 1.0e-3,
@@ -199,14 +219,14 @@ def _detect_cuda_collider(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = _compute_collider(context)
-    if collider is None or collider.type != "MESH":
-        return False, "Set a Mesh collider object first"
+    colliders = _compute_colliders(context)
+    if not colliders:
+        return False, "Set a Body mesh first"
     try:
         pps, _strands = _points_per_strand(obj)
         result = gravity_sim.prepare_gravity_sim(
             obj,
-            collider,
+            colliders,
             points_per_strand=pps,
             radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
             sort_axis=wm.yurameki_solver_sort_axis,
@@ -217,7 +237,8 @@ def _detect_cuda_collider(context):
     return (
         True,
         f"CUDA ready: strands={result['n_strands']}, cylinders={result['n_cylinders']}, "
-        f"hits={result['hit_count']}, triangles={result['n_triangles']}",
+        f"hits={result['hit_count']}, triangles={result['n_triangles']}, "
+        f"colliders={_collider_label(colliders)}",
     )
 
 
@@ -228,14 +249,14 @@ def _simulate_gravity(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = _compute_collider(context)
-    if collider is None or collider.type != "MESH":
-        return False, "Set a Mesh collider object first"
+    colliders = _compute_colliders(context)
+    if not colliders:
+        return False, "Set a Body mesh first"
     try:
         pps, _strands = _points_per_strand(obj)
         stats = gravity_sim.simulate_gravity_bake(
             obj,
-            collider,
+            colliders,
             points_per_strand=pps,
             start_frame=int(wm.yurameki_sim_start_frame),
             end_frame=int(wm.yurameki_sim_end_frame),
@@ -317,8 +338,8 @@ class YURAMEKI_OT_pick_curves(Operator):
 
 class YURAMEKI_OT_pick_collider(Operator):
     bl_idname = "yurameki.pick_collider"
-    bl_label = "Pick Collider"
-    bl_description = "Use the active mesh as the CUDA collider"
+    bl_label = "Pick Body"
+    bl_description = "Use the active mesh as the Body collider"
 
     def execute(self, context):
         obj = context.active_object
@@ -330,7 +351,22 @@ class YURAMEKI_OT_pick_collider(Operator):
         collider_proxy.clear_proxy(getattr(context.window_manager, "yurameki_collider_proxy_obj", ""))
         context.window_manager.yurameki_collider_proxy_obj = ""
         context.window_manager.yurameki_collider_obj = obj.name
-        self.report({"INFO"}, f"Collider: {obj.name}")
+        self.report({"INFO"}, f"Body: {obj.name}")
+        return {"FINISHED"}
+
+
+class YURAMEKI_OT_pick_clothes(Operator):
+    bl_idname = "yurameki.pick_clothes"
+    bl_label = "Pick Clothes"
+    bl_description = "Use the active mesh as the Clothes collider"
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, "Active object must be a mesh")
+            return {"CANCELLED"}
+        context.window_manager.yurameki_clothes_obj = obj.name
+        self.report({"INFO"}, f"Clothes: {obj.name}")
         return {"FINISHED"}
 
 
@@ -363,6 +399,7 @@ _classes = (
     YURAMEKI_OT_settle_hair_to_back,
     YURAMEKI_OT_pick_curves,
     YURAMEKI_OT_pick_collider,
+    YURAMEKI_OT_pick_clothes,
     YURAMEKI_OT_detect_cuda_collider,
     YURAMEKI_OT_simulate_gravity,
 )
@@ -384,6 +421,7 @@ _PROP_NAMES = (
     "yurameki_cylinder_length_cm",
     "yurameki_collider_obj",
     "yurameki_collider_proxy_obj",
+    "yurameki_clothes_obj",
     "yurameki_collider_radius_mm",
     "yurameki_collider_substeps",
     "yurameki_collider_max_move_mm",
@@ -420,7 +458,7 @@ def register():
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_curves_obj = StringProperty(
-            name="Hair Curves",
+            name="Hair",
             default=str(defaults.get("CURVES_OBJECT", "")),
             options={"SKIP_SAVE"},
         )
@@ -504,8 +542,13 @@ def register():
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_collider_obj = StringProperty(
-            name="Collider",
+            name="Body",
             default=str(defaults.get("COLLIDER_OBJECT", "")),
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_clothes_obj = StringProperty(
+            name="Clothes",
+            default=str(defaults.get("CLOTHES_OBJECT", "")),
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_collider_proxy_obj = StringProperty(

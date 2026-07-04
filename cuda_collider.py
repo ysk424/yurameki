@@ -133,6 +133,21 @@ def _as_int_ptr(array: np.ndarray):
 
 
 def mesh_world_triangles(mesh_obj):
+    if isinstance(mesh_obj, (list, tuple)):
+        vertices_all = []
+        triangles_all = []
+        offset = 0
+        for obj in mesh_obj:
+            vertices, triangles = mesh_world_triangles(obj)
+            vertices_all.append(vertices)
+            triangles_all.append(triangles + offset)
+            offset += int(len(vertices))
+        if not vertices_all:
+            raise ValueError("collider list has no meshes")
+        return (
+            np.ascontiguousarray(np.concatenate(vertices_all, axis=0), dtype=np.float32),
+            np.ascontiguousarray(np.concatenate(triangles_all, axis=0), dtype=np.int32),
+        )
     if mesh_obj is None or mesh_obj.type != "MESH":
         raise ValueError("collider object must be a Mesh")
     dg = bpy.context.evaluated_depsgraph_get()
