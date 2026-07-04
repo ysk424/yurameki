@@ -333,6 +333,95 @@ __global__ void avoid_kernel(int n_capsules,
     hit_normals[i * 3 + 2] = best_normal.z;
 }
 
+__device__ Vec3 closest_segment_triangle_normal(Vec3 p, Vec3 q,
+                                                int n_vertices,
+                                                const float* vertices,
+                                                int n_triangles,
+                                                const int* triangles,
+                                                float* best_dist_out) {
+    float best_sq = 3.402823466e+38f;
+    Vec3 best_normal{0.0f, 0.0f, 1.0f};
+    for (int tri = 0; tri < n_triangles; ++tri) {
+        int ia = triangles[tri * 3 + 0];
+        int ib = triangles[tri * 3 + 1];
+        int ic = triangles[tri * 3 + 2];
+        if (ia < 0 || ib < 0 || ic < 0 ||
+            ia >= n_vertices || ib >= n_vertices || ic >= n_vertices) {
+            continue;
+        }
+        Vec3 a = make_vec3(vertices + ia * 3);
+        Vec3 b = make_vec3(vertices + ib * 3);
+        Vec3 c = make_vec3(vertices + ic * 3);
+        Vec3 normal;
+        float d_sq = segment_triangle_distance_sq(p, q, a, b, c, &normal);
+        if (d_sq < best_sq) {
+            best_sq = d_sq;
+            best_normal = normal;
+        }
+    }
+    *best_dist_out = sqrtf(best_sq);
+    return best_normal;
+}
+
+__global__ void gravity_frame_kernel(int n_strands,
+                                     int points_per_strand,
+                                     float* points,
+                                     const float* prev_roots,
+                                     const float* target_roots,
+                                     const float* segment_lengths,
+                                     float alpha,
+                                     float gravity_z,
+                                     float radius,
+                                     int collider_substeps,
+                                     float max_move,
+                                     int n_vertices,
+                                     const float* vertices,
+                                     int n_triangles,
+                                     const int* triangles,
+                                     int* hit_count) {
+    int si = blockIdx.x * blockDim.x + threadIdx.x;
+    if (si >= n_strands) {
+        return;
+    }
+
+    int point_base = si * points_per_strand;
+    Vec3 prev_root = make_vec3(prev_roots + si * 3);
+    Vec3 target_root = make_vec3(target_roots + si * 3);
+    Vec3 root = prev_root * (1.0f - alpha) + target_root * alpha;
+    points[(point_base + 0) * 3 + 0] = root.x;
+    points[(point_base + 0) * 3 + 1] = root.y;
+    points[(point_base + 0) * 3 + 2] = root.z;
+
+    Vec3 gravity{0.0f, 0.0f, gravity_z};
+    for (int j = 0; j < points_per_strand - 1; ++j) {
+        Vec3 p = make_vec3(points + (point_base + j) * 3);
+        Vec3 old_tip = make_vec3(points + (point_base + j + 1) * 3);
+        float seg_len = segment_lengths[si * (points_per_strand - 1) + j];
+        Vec3 desired = old_tip + gravity;
+        Vec3 fallback = normalize_or(old_tip - p, Vec3{0.0f, 0.0f, -1.0f});
+        Vec3 dir = normalize_or(desired - p, fallback);
+        Vec3 q = p + dir * seg_len;
+
+        for (int cstep = 0; cstep < collider_substeps; ++cstep) {
+            float best_dist = 0.0f;
+            Vec3 normal = closest_segment_triangle_normal(
+                p, q, n_vertices, vertices, n_triangles, triangles, &best_dist);
+            if (best_dist > radius) {
+                break;
+            }
+            atomicAdd(hit_count, 1);
+            float push = fminf(fmaxf(radius - best_dist, 0.0f), max_move);
+            Vec3 pushed = q + normal * push;
+            Vec3 pushed_dir = normalize_or(pushed - p, fallback);
+            q = p + pushed_dir * seg_len;
+        }
+
+        points[(point_base + j + 1) * 3 + 0] = q.x;
+        points[(point_base + j + 1) * 3 + 1] = q.y;
+        points[(point_base + j + 1) * 3 + 2] = q.z;
+    }
+}
+
 bool set_error(const char* prefix, cudaError_t code) {
     g_last_error = std::string(prefix) + ": " + cudaGetErrorString(code);
     return false;
@@ -581,6 +670,107 @@ YK_EXPORT int yurameki_cuda_avoid_capsule_mesh(
     if (err != cudaSuccess) { set_error("cudaMemcpy hit_normals", err); cleanup(); return 6; }
     err = cudaMemcpy(hit_count_out, d_hit_count, sizeof(int), cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) { set_error("cudaMemcpy hit_count", err); cleanup(); return 6; }
+
+    cleanup();
+    return 0;
+}
+
+YK_EXPORT int yurameki_cuda_simulate_gravity_frame(
+    int n_strands,
+    int points_per_strand,
+    const float* points_xyz,
+    const float* prev_roots_xyz,
+    const float* target_roots_xyz,
+    const float* segment_lengths,
+    float gravity_step_m,
+    float radius,
+    int n_substeps,
+    int collider_substeps,
+    float max_move,
+    int n_vertices,
+    const float* vertices_xyz,
+    int n_triangles,
+    const int* triangles_i32,
+    float* out_points_xyz,
+    int* hit_count_out) {
+    g_last_error.clear();
+    if (n_strands <= 0 || points_per_strand < 2 || n_vertices <= 0 ||
+        n_triangles <= 0 || radius < 0.0f || n_substeps <= 0 ||
+        collider_substeps <= 0 || max_move <= 0.0f) {
+        g_last_error = "invalid gravity frame input shape";
+        return 1;
+    }
+
+    const int n_points = n_strands * points_per_strand;
+    const int n_segments = n_strands * (points_per_strand - 1);
+    float* d_points = nullptr;
+    float* d_prev_roots = nullptr;
+    float* d_target_roots = nullptr;
+    float* d_lengths = nullptr;
+    float* d_vertices = nullptr;
+    int* d_triangles = nullptr;
+    int* d_hit_count = nullptr;
+
+    auto cleanup = [&]() {
+        cudaFree(d_points);
+        cudaFree(d_prev_roots);
+        cudaFree(d_target_roots);
+        cudaFree(d_lengths);
+        cudaFree(d_vertices);
+        cudaFree(d_triangles);
+        cudaFree(d_hit_count);
+    };
+
+    cudaError_t err;
+    err = cudaMalloc(&d_points, size_t(n_points) * 3 * sizeof(float));
+    if (err != cudaSuccess) { set_error("cudaMalloc sim points", err); cleanup(); return 2; }
+    err = cudaMalloc(&d_prev_roots, size_t(n_strands) * 3 * sizeof(float));
+    if (err != cudaSuccess) { set_error("cudaMalloc prev roots", err); cleanup(); return 2; }
+    err = cudaMalloc(&d_target_roots, size_t(n_strands) * 3 * sizeof(float));
+    if (err != cudaSuccess) { set_error("cudaMalloc target roots", err); cleanup(); return 2; }
+    err = cudaMalloc(&d_lengths, size_t(n_segments) * sizeof(float));
+    if (err != cudaSuccess) { set_error("cudaMalloc segment lengths", err); cleanup(); return 2; }
+    err = cudaMalloc(&d_vertices, size_t(n_vertices) * 3 * sizeof(float));
+    if (err != cudaSuccess) { set_error("cudaMalloc sim vertices", err); cleanup(); return 2; }
+    err = cudaMalloc(&d_triangles, size_t(n_triangles) * 3 * sizeof(int));
+    if (err != cudaSuccess) { set_error("cudaMalloc sim triangles", err); cleanup(); return 2; }
+    err = cudaMalloc(&d_hit_count, sizeof(int));
+    if (err != cudaSuccess) { set_error("cudaMalloc sim hit count", err); cleanup(); return 2; }
+
+    err = cudaMemcpy(d_points, points_xyz, size_t(n_points) * 3 * sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) { set_error("cudaMemcpy sim points", err); cleanup(); return 3; }
+    err = cudaMemcpy(d_prev_roots, prev_roots_xyz, size_t(n_strands) * 3 * sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) { set_error("cudaMemcpy prev roots", err); cleanup(); return 3; }
+    err = cudaMemcpy(d_target_roots, target_roots_xyz, size_t(n_strands) * 3 * sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) { set_error("cudaMemcpy target roots", err); cleanup(); return 3; }
+    err = cudaMemcpy(d_lengths, segment_lengths, size_t(n_segments) * sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) { set_error("cudaMemcpy segment lengths", err); cleanup(); return 3; }
+    err = cudaMemcpy(d_vertices, vertices_xyz, size_t(n_vertices) * 3 * sizeof(float), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) { set_error("cudaMemcpy sim vertices", err); cleanup(); return 3; }
+    err = cudaMemcpy(d_triangles, triangles_i32, size_t(n_triangles) * 3 * sizeof(int), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) { set_error("cudaMemcpy sim triangles", err); cleanup(); return 3; }
+    err = cudaMemset(d_hit_count, 0, sizeof(int));
+    if (err != cudaSuccess) { set_error("cudaMemset sim hit count", err); cleanup(); return 3; }
+
+    int block = 128;
+    int grid = (n_strands + block - 1) / block;
+    for (int step = 0; step < n_substeps; ++step) {
+        float alpha = float(step + 1) / float(n_substeps);
+        gravity_frame_kernel<<<grid, block>>>(
+            n_strands, points_per_strand, d_points, d_prev_roots, d_target_roots,
+            d_lengths, alpha, -gravity_step_m / float(n_substeps), radius,
+            collider_substeps, max_move, n_vertices, d_vertices, n_triangles,
+            d_triangles, d_hit_count);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) { set_error("gravity_frame_kernel launch", err); cleanup(); return 4; }
+        err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) { set_error("gravity_frame_kernel sync", err); cleanup(); return 4; }
+    }
+
+    err = cudaMemcpy(out_points_xyz, d_points, size_t(n_points) * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) { set_error("cudaMemcpy sim out points", err); cleanup(); return 6; }
+    err = cudaMemcpy(hit_count_out, d_hit_count, sizeof(int), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) { set_error("cudaMemcpy sim hit count", err); cleanup(); return 6; }
 
     cleanup();
     return 0;

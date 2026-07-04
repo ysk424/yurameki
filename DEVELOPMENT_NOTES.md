@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.4.19.
+Current version: 0.5.5.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,28 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.4.19.zip`.
+- Latest package: `dist/yurameki-0.5.5.zip` after the next build.
+- `Simulate Gravity` is the first frame-range gravity bake path. It buffers
+  simulated frames in memory and bakes Curves position keyframes after compute.
+- `Settle Hair Back` no longer exposes `Outside mm` in the UI. Each segment now
+  has a final penetration guard after normal push iterations: endpoint inside,
+  direct segment ray hit, and 25%/50%/75% inside samples are checked before the
+  candidate is accepted.
+- Top-of-head root emergence is protected: for the first two rods, an original
+  outward-growing strand direction is preserved before blending back to the
+  normal back/down groom curve. Those protected root rods also use shallow
+  5%/10%/20% final-guard samples.
+- When a valid head-region collider normal is found, rod 1 is now locked as a
+  scalp-emergence anchor: point 0 remains the root and point 1 is placed one
+  segment length along the oriented collider normal. Later settle/refinement
+  passes skip rod 1.
+- Curves-to-cylinder decoding no longer assumes equal point counts per strand.
+  It uses each Curve span directly, stores flattened original arclength targets,
+  makes the last cylinder use its actual remaining length, and reconstructs
+  Blender points from the solved chain's real arclength.
+- Adjacent rod direction changes are limited to `1 radian` during normal groom
+  direction selection. This limit is intentionally not re-applied after collider
+  push-out or final penetration repair.
 
 ## Verified Before Break
 
@@ -42,14 +63,15 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.4.19.zip`, then:
+In Blender, install/use `yurameki-0.5.5.zip`, then:
 
-1. Press `Check Hair`.
-2. Use `Apply FK Root Pull` if FK needs a quick sanity check.
-3. Select `CC_Base_Body` or the intended mesh collider.
-4. Press `Pick Collider`.
-5. Use `Detect CUDA Collider` to confirm hit count.
-6. Use `Apply CUDA Avoidance` and inspect whether hair moves away from the body.
+1. Select `CC_Base_Body` or the intended mesh collider.
+2. Press `Pick Collider`.
+3. Press `Check Hair`; it now validates both Curves hair and collider.
+4. Press `Detect CUDA Collider`; this is the preparation/check step.
+5. Set `Start Frame` and `End Frame`.
+6. Press `Simulate Gravity` to compute the frame range in memory and bake
+   Curves position keyframes after completion.
 
 Important: broadphase uniform grid is not implemented yet.  The current CUDA
 collider path can be slow on full 400k+ triangle meshes because it is still the
@@ -61,6 +83,22 @@ first correctness pass.
 2. Make CUDA collider avoidance visually usable.
 3. Add hair-vs-hair collision using the fixed solve order.
 4. Optimize collider broadphase with CUB radix sort / grid cells.
+
+## 0.5.0 gravity bake
+
+The first gravity simulation pass starts from the lowered 0.4 groom result.
+Roots are not fixed in world space: for each frame, evaluated Curves root
+positions are read so root motion follows body/modifier animation. The Mesh
+collider is also evaluated every frame.
+
+Subframes are selected from the world-space motion of the last root in root-Z
+order. Up to `1 mm` runs one substep; `4.5 mm` runs five. This root is the
+current "north pole" representative point. A second equator representative may
+be added later if rotation cases need it.
+
+Each substep applies gravity, preserves segment length in FK order, and sends
+same-joint segments across all strands to CUDA capsule/mesh avoidance. Hair-hair
+collision is intentionally absent in this first pass.
 
 ## Initial groom BVH experiment
 

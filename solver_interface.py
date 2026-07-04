@@ -31,6 +31,8 @@ class CylinderModel:
     cylinder_index: np.ndarray
     strand_offsets: np.ndarray
     source_distances: np.ndarray
+    source_distance_offsets: np.ndarray
+    source_point_offsets: np.ndarray
     order: np.ndarray
     sort_axis: str
 
@@ -58,6 +60,13 @@ def _stable_order(roots: np.ndarray, strand_index: np.ndarray,
     col, descending = _axis_column(axis)
     key = -roots[:, col] if descending else roots[:, col]
     return np.lexsort((cylinder_index, strand_index, key)).astype(np.int32)
+
+
+def _curve_spans(curves_data):
+    return [
+        (int(curve.first_point_index), int(curve.points_length))
+        for curve in curves_data.curves
+    ]
 
 
 def _read_world(curves_obj):
@@ -135,33 +144,38 @@ def build_cylinder_model(curves_obj, points_per_strand: int,
         raise ValueError("cylinder_length_m must be positive")
 
     world, _original = _read_world(curves_obj)
-    n_total = len(world)
-    if n_total % points_per_strand != 0:
-        raise ValueError(
-            f"n_total={n_total} is not divisible by points_per_strand={points_per_strand}"
-        )
+    spans = _curve_spans(curves_obj.data)
+    if not spans:
+        raise ValueError("Curves object has no strands")
+    if max(start + count for start, count in spans) > len(world):
+        raise ValueError("Curves span points exceed position attribute size")
+    if any(count < 2 for _start, count in spans):
+        raise ValueError("all strands must have at least 2 points")
 
-    strands = world.reshape(-1, points_per_strand, 3)
     roots = []
     dirs = []
     lengths = []
     strand_ids = []
     cylinder_ids = []
     offsets = [0]
-    source_distances = np.zeros(
-        (len(strands), points_per_strand), dtype=np.float32
-    )
+    source_distances = []
+    source_distance_offsets = [0]
+    source_point_offsets = []
 
     fallback_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-    for si, strand in enumerate(strands):
+    max_points_per_strand = max(count for _start, count in spans)
+    for si, (point_start, point_count) in enumerate(spans):
+        source_point_offsets.append(point_start)
+        strand = world[point_start:point_start + point_count]
         seg = strand[1:] - strand[:-1]
         seg_len = np.linalg.norm(seg, axis=1)
         dist = np.concatenate(
             [np.array([0.0], dtype=np.float32), np.cumsum(seg_len).astype(np.float32)]
         )
-        source_distances[si] = dist
+        source_distances.extend(float(value) for value in dist)
+        source_distance_offsets.append(len(source_distances))
         total = float(dist[-1])
-        n_cyl = max(1, int(np.ceil(max(total, cylinder_length_m) / cylinder_length_m)))
+        n_cyl = max(1, int(np.ceil(total / cylinder_length_m)))
 
         for ci in range(n_cyl):
             start_d = min(float(ci) * cylinder_length_m, total)
@@ -169,9 +183,10 @@ def build_cylinder_model(curves_obj, points_per_strand: int,
             start = _sample_polyline(strand, dist, start_d)
             end = _sample_polyline(strand, dist, end_d)
             direction = _unit_or(end - start, fallback_dir)
+            length = max(0.0, end_d - start_d)
             roots.append(start)
             dirs.append(direction)
-            lengths.append(cylinder_length_m)
+            lengths.append(length)
             strand_ids.append(si)
             cylinder_ids.append(ci)
         offsets.append(len(roots))
@@ -182,10 +197,13 @@ def build_cylinder_model(curves_obj, points_per_strand: int,
     strand_index = np.asarray(strand_ids, dtype=np.int32)
     cylinder_index = np.asarray(cylinder_ids, dtype=np.int32)
     offsets = np.asarray(offsets, dtype=np.int32)
+    source_distances = np.asarray(source_distances, dtype=np.float32)
+    source_distance_offsets = np.asarray(source_distance_offsets, dtype=np.int32)
+    source_point_offsets = np.asarray(source_point_offsets, dtype=np.int32)
     order = _stable_order(roots, strand_index, cylinder_index, sort_axis)
     return CylinderModel(
         world=world,
-        points_per_strand=points_per_strand,
+        points_per_strand=max_points_per_strand,
         roots=roots,
         dirs=dirs,
         lengths=lengths,
@@ -193,6 +211,8 @@ def build_cylinder_model(curves_obj, points_per_strand: int,
         cylinder_index=cylinder_index,
         strand_offsets=offsets,
         source_distances=source_distances,
+        source_distance_offsets=source_distance_offsets,
+        source_point_offsets=source_point_offsets,
         order=order,
         sort_axis=sort_axis,
     )
@@ -312,19 +332,27 @@ def reconstruct_points(model: CylinderModel, cylinder_roots: np.ndarray,
     for si in range(model.n_strands):
         begin = int(model.strand_offsets[si])
         end = int(model.strand_offsets[si + 1])
+        source_begin = int(model.source_distance_offsets[si])
+        source_end = int(model.source_distance_offsets[si + 1])
+        point_start = int(model.source_point_offsets[si])
+        targets = model.source_distances[source_begin:source_end]
         chain = [cylinder_roots[begin]]
         chain.extend(cylinder_tips[begin:end])
         chain = np.asarray(chain, dtype=np.float32)
+        chain_seg = chain[1:] - chain[:-1]
+        chain_len = np.linalg.norm(chain_seg, axis=1).astype(np.float32)
         chain_dist = np.concatenate([
             np.array([0.0], dtype=np.float32),
-            np.cumsum(model.lengths[begin:end]).astype(np.float32),
+            np.cumsum(chain_len).astype(np.float32),
         ])
-        if len(chain_dist) > 1:
-            chain_dist[-1] = max(chain_dist[-1], model.source_distances[si, -1])
-        for pi, target in enumerate(model.source_distances[si]):
-            out[si * model.points_per_strand + pi] = _sample_polyline(
-                chain, chain_dist, float(target)
-            )
+        source_total = float(targets[-1]) if len(targets) else 0.0
+        chain_total = float(chain_dist[-1]) if len(chain_dist) else 0.0
+        for local_pi, target in enumerate(targets):
+            if source_total > 1.0e-9 and chain_total > 1.0e-9:
+                sample_distance = float(target) * chain_total / source_total
+            else:
+                sample_distance = 0.0
+            out[point_start + local_pi] = _sample_polyline(chain, chain_dist, sample_distance)
     return out
 
 
@@ -391,6 +419,9 @@ def export_probe_data(curves_obj, path: str, **kwargs) -> str:
         strand_index=data["strand_index"],
         cylinder_index=data["cylinder_index"],
         strand_offsets=data["strand_offsets"],
+        source_distances=model.source_distances,
+        source_distance_offsets=model.source_distance_offsets,
+        source_point_offsets=model.source_point_offsets,
         probe_roots=data["probe_roots"].astype(np.float32, copy=False),
         probe_tips=data["probe_tips"].astype(np.float32, copy=False),
         length_error_m=data["length_error_m"].astype(np.float32, copy=False),

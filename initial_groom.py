@@ -8,6 +8,7 @@ releases back to vertical falling when a short downward probe is clear.
 
 from __future__ import annotations
 
+import math
 import time
 
 import bpy
@@ -73,6 +74,36 @@ def _project_to_tangent(direction: Vector, normal: Vector) -> Vector:
     return slide
 
 
+def _limit_turn_direction(prev_dir: Vector | None, desired_dir: Vector, max_angle_rad: float) -> tuple[Vector, bool]:
+    if prev_dir is None or prev_dir.length <= 1.0e-9 or desired_dir.length <= 1.0e-9:
+        direction = desired_dir.copy()
+        if direction.length <= 1.0e-9:
+            direction = DOWN.copy()
+        direction.normalize()
+        return direction, False
+
+    prev = prev_dir.normalized()
+    desired = desired_dir.normalized()
+    dot = max(-1.0, min(1.0, prev.dot(desired)))
+    min_dot = math.cos(max_angle_rad)
+    if dot >= min_dot:
+        return desired, False
+
+    tangent = desired - prev * dot
+    if tangent.length <= 1.0e-7:
+        tangent = BACK - prev * prev.dot(BACK)
+    if tangent.length <= 1.0e-7:
+        tangent = DOWN - prev * prev.dot(DOWN)
+    if tangent.length <= 1.0e-7:
+        tangent = Vector((1.0, 0.0, 0.0)) - prev * prev.x
+    if tangent.length <= 1.0e-7:
+        return prev.copy(), True
+    tangent.normalize()
+    limited = prev * math.cos(max_angle_rad) + tangent * math.sin(max_angle_rad)
+    limited.normalize()
+    return limited, True
+
+
 def settle_hair_back(
     curves_obj,
     collider_obj,
@@ -81,10 +112,10 @@ def settle_hair_back(
     follow_radius_m: float = 0.0300,
     release_probe_m: float = 0.0200,
     release_clearance_m: float = 0.0040,
-    outside_clearance_m: float = 0.0040,
     max_surface_run_m: float = 0.0300,
     surface_stick: float = 0.78,
     push_iterations: int = 5,
+    max_turn_angle_rad: float = 1.0,
 ) -> dict:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
@@ -145,6 +176,12 @@ def settle_hair_back(
         "inside_pushes": 0,
         "head_radial_pushes": 0,
         "sample_pushes": 0,
+        "final_guard_pushes": 0,
+        "final_guard_fallbacks": 0,
+        "final_guard_unresolved": 0,
+        "root_emergence_guides": 0,
+        "normal_root_locks": 0,
+        "angle_limited_rods": 0,
         "remaining_close_points": 0,
         "changed_points": 0,
         "max_move_m": 0.0,
@@ -167,8 +204,8 @@ def settle_hair_back(
     def release_path_outside_enough(point: Vector, direction: Vector) -> bool:
         # A single endpoint can be outside while the path still cuts behind an
         # ear/scalp feature.  Check the whole short release path instead.
-        # Release means "not penetrating"; requiring the full outside clearance
-        # here keeps hair sliding outward even after the downward path is clear.
+        # Release means "not penetrating"; requiring a larger outside clearance
+        # here keeps hair sliding outward after the downward path is already clear.
         for factor in (0.25, 0.5, 0.75, 1.0):
             sample = point + direction * (release_probe_m * factor)
             if signed_outside_distance(sample) < 0.0:
@@ -319,12 +356,96 @@ def settle_hair_back(
         stats["slide_events"] += 1
         return mixed, surface_run + 0.01, True
 
-    def solve_candidate(prev: Vector, desired: Vector, seg_len: float) -> Vector:
+    def solve_candidate(prev: Vector, desired: Vector, seg_len: float, shallow_guard: bool = False) -> Vector:
         candidate = desired.copy()
         fallback_dir = candidate - prev
         if fallback_dir.length <= 1.0e-9:
             fallback_dir = DOWN.copy()
         fallback_dir.normalize()
+
+        def project_to_length(point: Vector) -> Vector:
+            v = point - prev
+            return prev + (v.normalized() if v.length > 1.0e-9 else fallback_dir) * seg_len
+
+        def nearest_normal(point: Vector) -> Vector | None:
+            nearest = bvh.find_nearest(point, follow_radius_m)
+            if nearest is None:
+                return None
+            _loc, normal, _index, _dist = nearest
+            if normal is None or normal.length <= 1.0e-7:
+                return None
+            return normal.normalized()
+
+        def final_segment_issue(point: Vector):
+            if point_inside_collider(point):
+                return "endpoint", point, nearest_normal(point)
+
+            move = point - prev
+            move_len = move.length
+            if move_len > 1.0e-9:
+                direction = move.normalized()
+                origin = prev + direction * 1.0e-5
+                cast_distance = move_len - 2.0e-5
+                if cast_distance > 1.0e-9:
+                    hit = bvh.ray_cast(origin, direction, cast_distance)
+                    if hit is not None:
+                        loc, normal, _index, dist = hit
+                        if loc is not None and normal is not None and dist is not None and dist >= 0.0:
+                            return "ray", loc, normal.normalized()
+
+            sample_factors = (0.05, 0.10, 0.20, 0.25, 0.5, 0.75) if shallow_guard else (0.25, 0.5, 0.75)
+            for factor in sample_factors:
+                sample = prev.lerp(point, factor)
+                if point_inside_collider(sample):
+                    return "sample", sample, nearest_normal(sample)
+            return None
+
+        def repair_final_issue(point: Vector, issue) -> Vector:
+            kind, loc, normal = issue
+            move = point - prev
+            direction = move.normalized() if move.length > 1.0e-9 else fallback_dir
+            push_dir = push_direction(loc, normal)
+            if kind == "ray":
+                slide = _project_to_tangent(direction, push_dir)
+                remaining = max(0.0, seg_len - (loc - prev).length)
+                return project_to_length(loc + push_dir * collision_radius_m + slide * remaining)
+            repaired = pushed_out_point(loc, normal, collision_radius_m)
+            tangent = _project_to_tangent(direction, push_dir)
+            return project_to_length(repaired + tangent * 0.0005)
+
+        def find_safe_candidate(point: Vector) -> Vector:
+            raw_dirs = [
+                point - prev,
+                DOWN.copy(),
+                back_down.copy(),
+                BACK.copy(),
+                (BACK * 0.30 + DOWN * 0.95),
+            ]
+            for probe in (point, prev.lerp(point, 0.5)):
+                normal = nearest_normal(probe)
+                if normal is None:
+                    continue
+                push_dir = push_direction(probe, normal)
+                raw_dirs.extend((
+                    push_dir,
+                    _project_to_tangent(DOWN, push_dir),
+                    _project_to_tangent(BACK, push_dir),
+                    DOWN * 0.78 + push_dir * 0.35,
+                ))
+
+            tried = []
+            for raw in raw_dirs:
+                if raw.length <= 1.0e-9:
+                    continue
+                direction = raw.normalized()
+                if any((direction - existing).length < 1.0e-4 for existing in tried):
+                    continue
+                tried.append(direction)
+                candidate = prev + direction * seg_len
+                if final_segment_issue(candidate) is None:
+                    return candidate
+            return point
+
         for _it in range(push_iterations):
             move = candidate - prev
             move_len = move.length
@@ -401,10 +522,21 @@ def settle_hair_back(
                             stats["inside_pushes"] += 1
                         else:
                             stats["sample_pushes"] += 1
-        v = candidate - prev
-        if v.length > 1.0e-9:
-            return prev + v.normalized() * seg_len
-        return prev + fallback_dir * seg_len
+
+        candidate = project_to_length(candidate)
+        for _guard in range(4):
+            issue = final_segment_issue(candidate)
+            if issue is None:
+                return candidate
+            candidate = repair_final_issue(candidate, issue)
+            stats["final_guard_pushes"] += 1
+
+        safe = find_safe_candidate(candidate)
+        if final_segment_issue(safe) is None:
+            stats["final_guard_fallbacks"] += 1
+            return safe
+        stats["final_guard_unresolved"] += 1
+        return safe
 
     for si in target_strands:
         start, count = spans[si]
@@ -414,34 +546,103 @@ def settle_hair_back(
             length = (old[j + 1] - old[j]).length
             seg_lens.append(length if length > 1.0e-6 else 0.01)
 
+        def root_emergence_direction(j: int, base_dir: Vector):
+            if j >= 2 or j + 1 >= len(old):
+                return base_dir, False
+            original = old[j + 1] - old[j]
+            if original.length <= 1.0e-9:
+                return base_dir, False
+            original.normalize()
+
+            is_head_region = old[j].z >= head_region_min_z
+            is_outward = is_head_region and original.z > 0.20
+            nearest = bvh.find_nearest(old[j], follow_radius_m)
+            if nearest is not None:
+                _loc, normal, _index, _dist = nearest
+                if normal is not None and normal.length > 1.0e-7:
+                    is_outward = is_outward or original.dot(normal.normalized()) > 0.10
+            if not is_outward:
+                return base_dir, False
+
+            weight = 1.0 if j == 0 else 0.65
+            mixed = original * weight + base_dir * (1.0 - weight)
+            if mixed.length <= 1.0e-7:
+                mixed = original
+            else:
+                mixed.normalize()
+            stats["root_emergence_guides"] += 1
+            return mixed, True
+
+        def first_rod_normal_lock():
+            if not seg_lens or old[0].z < head_region_min_z:
+                return None
+            nearest = bvh.find_nearest(old[0], follow_radius_m)
+            if nearest is None:
+                return None
+            loc, normal, _index, _dist = nearest
+            if loc is None or normal is None or normal.length <= 1.0e-7:
+                return None
+            normal = normal.normalized()
+            root_offset = old[0] - loc
+            if root_offset.length > 1.0e-7:
+                if root_offset.dot(normal) < 0.0:
+                    normal.negate()
+            elif normal.dot(head_radial_direction(old[0])) < 0.0:
+                normal.negate()
+            stats["normal_root_locks"] += 1
+            return old[0] + normal * seg_lens[0]
+
         new = [old[0].copy()]
+        locked_first_rod = False
+        first_tip = first_rod_normal_lock()
+        if first_tip is not None:
+            new.append(first_tip)
+            locked_first_rod = True
+
         surface_run = 0.0
-        for j, seg_len in enumerate(seg_lens):
+        start_joint = 1 if locked_first_rod else 0
+        for j in range(start_joint, len(seg_lens)):
+            seg_len = seg_lens[j]
             t = j / max(1, len(seg_lens) - 1)
-            desired_dir = _base_drop_direction(t)
+            desired_dir, has_emergence = root_emergence_direction(j, _base_drop_direction(t))
             direction, surface_run, in_surface = choose_direction(new[-1], desired_dir, surface_run)
             if not in_surface:
                 surface_run = 0.0
-            new.append(solve_candidate(new[-1], new[-1] + direction * seg_len, seg_len))
+            prev_dir = new[-1] - new[-2] if len(new) > 1 else None
+            direction, limited = _limit_turn_direction(prev_dir, direction, max_turn_angle_rad)
+            if limited:
+                stats["angle_limited_rods"] += 1
+            new.append(solve_candidate(new[-1], new[-1] + direction * seg_len, seg_len, shallow_guard=has_emergence))
 
         for _pass in range(3):
             surface_run = 0.0
             for j, seg_len in enumerate(seg_lens):
+                if locked_first_rod and j == 0:
+                    continue
+                base_dir = _base_drop_direction(j / max(1, len(seg_lens) - 1))
+                emergence_dir, has_emergence = root_emergence_direction(j, base_dir)
                 direction = new[j + 1] - new[j]
                 if direction.length <= 1.0e-9:
-                    direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
+                    direction = emergence_dir
                 else:
                     direction.normalize()
-                    if direction.z > -0.35:
-                        direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
+                    if has_emergence:
+                        direction = emergence_dir
+                    elif direction.z > -0.35:
+                        direction = base_dir
                 direction, surface_run, in_surface = choose_direction(new[j], direction, surface_run)
                 if not in_surface:
                     surface_run = 0.0
-                new[j + 1] = solve_candidate(new[j], new[j] + direction * seg_len, seg_len)
+                prev_dir = new[j] - new[j - 1] if j > 0 else None
+                direction, limited = _limit_turn_direction(prev_dir, direction, max_turn_angle_rad)
+                if limited:
+                    stats["angle_limited_rods"] += 1
+                new[j + 1] = solve_candidate(new[j], new[j] + direction * seg_len, seg_len, shallow_guard=has_emergence)
 
-        tip_dir = new[-1] - new[-2]
-        if tip_dir.length > 1.0e-9:
-            stats["tip_down_dot_sum"] += tip_dir.normalized().dot(DOWN)
+        if len(new) > 1:
+            tip_dir = new[-1] - new[-2]
+            if tip_dir.length > 1.0e-9:
+                stats["tip_down_dot_sum"] += tip_dir.normalized().dot(DOWN)
 
         for j in range(count):
             idx = start + j
@@ -489,6 +690,12 @@ def settle_hair_back(
         "inside_pushes": int(stats["inside_pushes"]),
         "head_radial_pushes": int(stats["head_radial_pushes"]),
         "sample_pushes": int(stats["sample_pushes"]),
+        "final_guard_pushes": int(stats["final_guard_pushes"]),
+        "final_guard_fallbacks": int(stats["final_guard_fallbacks"]),
+        "final_guard_unresolved": int(stats["final_guard_unresolved"]),
+        "root_emergence_guides": int(stats["root_emergence_guides"]),
+        "normal_root_locks": int(stats["normal_root_locks"]),
+        "angle_limited_rods": int(stats["angle_limited_rods"]),
         "remaining_close_points": int(stats["remaining_close_points"]),
         "min_clearance_mm": None if stats["min_clearance_m"] == 999.0 else stats["min_clearance_m"] * 1000.0,
         "max_move_cm": stats["max_move_m"] * 100.0,

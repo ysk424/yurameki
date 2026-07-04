@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.4.19"
+version = "0.5.5"
 name = "Yurameki"
 tagline = "Yurameki (揺らめき) — CUDA hair solver prototype"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
@@ -21,6 +21,7 @@ paths = [
     "ui.py",
     "solver_interface.py",
     "initial_groom.py",
+    "gravity_sim.py",
     "cuda_collider.py",
     "yurameki_defaults.json",
     "README.md",

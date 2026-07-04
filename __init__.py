@@ -1,4 +1,4 @@
-"""Yurameki 0.4.x -- CUDA straight long-hair solver prototype."""
+"""Yurameki 0.5.x -- CUDA straight long-hair solver prototype."""
 
 from __future__ import annotations
 
@@ -19,7 +19,12 @@ def _load_defaults():
         return json.load(f)
 
 
-def _find_curves_obj():
+def _find_curves_obj(context=None):
+    wm = context.window_manager if context is not None else bpy.context.window_manager
+    name = getattr(wm, "yurameki_curves_obj", "").strip()
+    if name:
+        obj = bpy.data.objects.get(name)
+        return obj if obj is not None and obj.type == "CURVES" else None
     objs = [o for o in bpy.data.objects if o.type == "CURVES"]
     return objs[0] if len(objs) == 1 else None
 
@@ -36,11 +41,9 @@ def _points_per_strand(obj):
     if not spans:
         raise ValueError("Curves object has no strands")
     lengths = sorted({length for _start, length in spans})
-    if len(lengths) != 1:
-        raise ValueError(f"strands have different point counts: {lengths[:8]}")
-    pps = int(lengths[0])
-    if pps < 2:
-        raise ValueError(f"{pps} points per strand is too small")
+    if min(lengths) < 2:
+        raise ValueError(f"{min(lengths)} points per strand is too small")
+    pps = int(max(lengths))
     return pps, len(spans)
 
 
@@ -54,24 +57,33 @@ def _solver_kwargs(context, pps: int) -> dict:
 
 
 def _check_hair(context):
-    obj = _find_curves_obj()
+    obj = _find_curves_obj(context)
     if obj is None:
-        return False, "Need exactly one Curves object"
+        return False, "Pick one Hair Curves object"
+    wm = context.window_manager
+    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    if collider is None or collider.type != "MESH":
+        return False, "Hair Check failed: set a Mesh collider object first"
     try:
         pps, strands = _points_per_strand(obj)
     except Exception as exc:
         return False, f"Hair Check failed: {exc}"
     context.window_manager.yurameki_points_per_strand = pps
-    return True, f"Hair Check PASS: {strands} strands, {pps} points per strand"
+    lengths = sorted({length for _start, length in _curve_spans(obj.data)})
+    if len(lengths) == 1:
+        point_text = f"{pps} points"
+    else:
+        point_text = f"{lengths[0]}-{lengths[-1]} points"
+    return True, f"Hair Check PASS: {strands} strands, {point_text}, collider={collider.name}"
 
 
 def _apply_solver_step(context):
     from . import cuda_collider
     from . import solver_interface as si
 
-    obj = _find_curves_obj()
+    obj = _find_curves_obj(context)
     if obj is None:
-        return False, "Need exactly one Curves object"
+        return False, "Pick one Hair Curves object"
     wm = context.window_manager
     collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
     try:
@@ -117,9 +129,9 @@ def _apply_solver_step(context):
 def _settle_hair_to_back(context):
     from . import initial_groom
 
-    obj = _find_curves_obj()
+    obj = _find_curves_obj(context)
     if obj is None:
-        return False, "Need exactly one Curves object"
+        return False, "Pick one Hair Curves object"
     wm = context.window_manager
     collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
     if collider is None or collider.type != "MESH":
@@ -128,11 +140,10 @@ def _settle_hair_to_back(context):
         stats = initial_groom.settle_hair_back(
             obj,
             collider,
-            max_strands=int(wm.yurameki_groom_until_rank),
+            max_strands=0,
             collision_radius_m=float(wm.yurameki_groom_radius_mm) * 1.0e-3,
             follow_radius_m=float(wm.yurameki_groom_follow_mm) * 1.0e-3,
             release_probe_m=float(wm.yurameki_groom_release_mm) * 1.0e-3,
-            outside_clearance_m=float(wm.yurameki_groom_outside_mm) * 1.0e-3,
         )
     except Exception as exc:
         return False, f"Settle hair failed: {exc!r}"
@@ -142,23 +153,26 @@ def _settle_hair_to_back(context):
         f"time={stats['elapsed_sec']:.2f}s, "
         f"len_err={stats['max_length_error_mm']:.6f}mm, "
         f"close={stats['remaining_close_points']}, "
+        f"root_lock={stats.get('normal_root_locks', 0)}, "
+        f"turn={stats.get('angle_limited_rods', 0)}, "
         f"tip_down={stats['avg_tip_down_dot']:.3f}",
     )
 
 
 def _detect_cuda_collider(context):
     from . import cuda_collider
+    from . import gravity_sim
 
-    obj = _find_curves_obj()
+    obj = _find_curves_obj(context)
     if obj is None:
-        return False, "Need exactly one Curves object"
+        return False, "Pick one Hair Curves object"
     wm = context.window_manager
     collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
     if collider is None or collider.type != "MESH":
         return False, "Set a Mesh collider object first"
     try:
         pps, _strands = _points_per_strand(obj)
-        result = cuda_collider.detect_capsule_mesh(
+        result = gravity_sim.prepare_gravity_sim(
             obj,
             collider,
             points_per_strand=pps,
@@ -170,8 +184,41 @@ def _detect_cuda_collider(context):
         return False, f"CUDA collider failed: {exc!r}"
     return (
         True,
-        f"CUDA collider hits: {result.hit_count} / {result.n_cylinders} "
-        f"cylinders, triangles={result.n_triangles}",
+        f"CUDA ready: strands={result['n_strands']}, cylinders={result['n_cylinders']}, "
+        f"hits={result['hit_count']}, triangles={result['n_triangles']}",
+    )
+
+
+def _simulate_gravity(context):
+    from . import gravity_sim
+
+    obj = _find_curves_obj(context)
+    if obj is None:
+        return False, "Pick one Hair Curves object"
+    wm = context.window_manager
+    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    if collider is None or collider.type != "MESH":
+        return False, "Set a Mesh collider object first"
+    try:
+        pps, _strands = _points_per_strand(obj)
+        stats = gravity_sim.simulate_gravity_bake(
+            obj,
+            collider,
+            points_per_strand=pps,
+            start_frame=int(wm.yurameki_sim_start_frame),
+            end_frame=int(wm.yurameki_sim_end_frame),
+            gravity_step_m=float(wm.yurameki_gravity_step_mm) * 1.0e-3,
+            radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
+            collider_substeps=int(wm.yurameki_collider_substeps),
+            collider_max_move_m=float(wm.yurameki_collider_max_move_mm) * 1.0e-3,
+        )
+    except Exception as exc:
+        return False, f"Gravity simulation failed: {exc!r}"
+    return (
+        True,
+        f"Gravity bake: frames={stats.start_frame}-{stats.end_frame}, "
+        f"strands={stats.n_strands}, max_substeps={stats.max_substeps}, "
+        f"root_move={stats.max_root_move_mm:.3f}mm, time={stats.elapsed_sec:.2f}s",
     )
 
 
@@ -221,6 +268,21 @@ class YURAMEKI_OT_settle_hair_to_back(Operator):
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
+class YURAMEKI_OT_pick_curves(Operator):
+    bl_idname = "yurameki.pick_curves"
+    bl_label = "Pick Hair Curves"
+    bl_description = "Use the active Curves object as the simulated hair"
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "CURVES":
+            self.report({"ERROR"}, "Active object must be Curves")
+            return {"CANCELLED"}
+        context.window_manager.yurameki_curves_obj = obj.name
+        self.report({"INFO"}, f"Hair Curves: {obj.name}")
+        return {"FINISHED"}
+
+
 class YURAMEKI_OT_pick_collider(Operator):
     bl_idname = "yurameki.pick_collider"
     bl_label = "Pick Collider"
@@ -247,28 +309,42 @@ class YURAMEKI_OT_detect_cuda_collider(Operator):
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
+class YURAMEKI_OT_simulate_gravity(Operator):
+    bl_idname = "yurameki.simulate_gravity"
+    bl_label = "Simulate Gravity"
+    bl_description = "Simulate the selected frame range in memory and bake Curves position keyframes"
+
+    def execute(self, context):
+        ok, message = _simulate_gravity(context)
+        self.report({"INFO"} if ok else {"ERROR"}, message)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
+
 _classes = (
     YURAMEKI_OT_check_hair,
     YURAMEKI_OT_apply_solver_step,
     YURAMEKI_OT_reset_solver_state,
     YURAMEKI_OT_settle_hair_to_back,
+    YURAMEKI_OT_pick_curves,
     YURAMEKI_OT_pick_collider,
     YURAMEKI_OT_detect_cuda_collider,
+    YURAMEKI_OT_simulate_gravity,
 )
 
 
 _PROP_NAMES = (
     "yurameki_points_per_strand",
     "yurameki_hair_check_status",
+    "yurameki_curves_obj",
     "yurameki_solver_sort_axis",
     "yurameki_solver_step_index",
     "yurameki_gravity_step_mm",
     "yurameki_gravity_blend_steps",
-    "yurameki_groom_until_rank",
+    "yurameki_sim_start_frame",
+    "yurameki_sim_end_frame",
     "yurameki_groom_radius_mm",
     "yurameki_groom_follow_mm",
     "yurameki_groom_release_mm",
-    "yurameki_groom_outside_mm",
     "yurameki_cylinder_length_cm",
     "yurameki_collider_obj",
     "yurameki_collider_radius_mm",
@@ -306,6 +382,11 @@ def register():
             default="Hair not checked",
             options={"SKIP_SAVE"},
         )
+        WindowManager.yurameki_curves_obj = StringProperty(
+            name="Hair Curves",
+            default=str(defaults.get("CURVES_OBJECT", "")),
+            options={"SKIP_SAVE"},
+        )
         WindowManager.yurameki_solver_sort_axis = EnumProperty(
             name="Sort Axis",
             items=(
@@ -339,12 +420,18 @@ def register():
             max=240,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_groom_until_rank = IntProperty(
-            name="Groom Until",
-            description="Temporary debug limit: process lower-Z root order up to this count; 0 means all strands",
-            default=int(defaults.get("GROOM_UNTIL_RANK", 500)),
-            min=0,
-            max=200000,
+        WindowManager.yurameki_sim_start_frame = IntProperty(
+            name="Start Frame",
+            default=int(defaults.get("SIM_START_FRAME", 1)),
+            min=-1048574,
+            max=1048574,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_end_frame = IntProperty(
+            name="End Frame",
+            default=int(defaults.get("SIM_END_FRAME", 24)),
+            min=-1048574,
+            max=1048574,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_groom_radius_mm = FloatProperty(
@@ -368,14 +455,6 @@ def register():
             default=float(defaults.get("GROOM_RELEASE_MM", 20.0)),
             min=1.0,
             max=200.0,
-            precision=3,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_groom_outside_mm = FloatProperty(
-            name="Outside mm",
-            default=float(defaults.get("GROOM_OUTSIDE_MM", 4.0)),
-            min=0.1,
-            max=50.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
