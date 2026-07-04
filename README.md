@@ -1,9 +1,9 @@
-# Yurameki 0.5.15
+# Yurameki 0.5.16
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.15 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.16 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -141,6 +141,13 @@ The 0.5.15 package adds that Hair/Body/Clothes input layout. The old generic
 Collider field is now the Body field, and Clothes is an optional second Mesh
 collider included in initial groom, CUDA detection, solver step, and gravity
 bake collision input.
+
+The 0.5.16 package adds a lower free-groom region below world `Z = 1.30 m`.
+Segments in that region use the original strand direction as their target,
+skip the back/down release direction, skip forced surface release, and skip the
+adjacent-rod turn limiter. Collider push-out and final penetration guards still
+run, so shoulder and clothes collision is avoided without making the lower hair
+snap into straight groom directions.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

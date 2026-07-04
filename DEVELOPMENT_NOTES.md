@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.15.
+Current version: 0.5.16.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.15.zip`.
+- Latest package: `dist/yurameki-0.5.16.zip`.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -45,6 +45,10 @@ it becomes useful.
 - The top input area now has explicit Hair, Body, and Clothes fields. The old
   generic Mesh collider is the Body collider. Clothes is optional and is added
   as a second evaluated Mesh collider in the body collision path.
+- The lower groom region below world `Z = 1.30 m` now preserves the original
+  strand direction and only performs collider avoidance/repair. Back/down
+  release, forced release, and the adjacent-rod turn limiter are skipped there
+  so shoulder and clothes avoidance does not straighten the lower hair.
 - When a valid head-region collider normal is found, rod 1 is now locked as a
   scalp-emergence anchor: point 0 remains the root and point 1 is placed one
   segment length along the oriented collider normal. Later settle/refinement
@@ -209,7 +213,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.15.zip`, then:
+In Blender, install/use `yurameki-0.5.16.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Body`.
@@ -244,6 +248,18 @@ The existing `yurameki_collider_obj` is kept internally for compatibility, but
 its UI label is now Body.  The new `yurameki_clothes_obj` field is optional.
 Collision calls receive Body proxy plus Clothes mesh as a list, and both CPU BVH
 and CUDA triangle extraction merge the evaluated meshes before collision tests.
+
+## 0.5.16 Lower Free Groom
+
+World `Z < 1.30 m` is treated as a styling region below the accepted neck-up
+groom. For those lower segments, `Settle Hair Back` uses the source strand
+segment direction as the desired direction and leaves the collider machinery to
+do only avoidance and final repair. The lower region does not use the
+`back_down` release direction, forced surface release, or the `1 radian`
+adjacent-rod turn limit.
+
+This keeps the accepted head/face behavior unchanged while reducing the
+straight shoulder-side artifacts caused by clothes avoidance.
 
 ## 0.5.0 gravity bake
 

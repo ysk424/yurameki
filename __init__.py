@@ -207,6 +207,7 @@ def _settle_hair_to_back(context):
         f"close={stats['remaining_close_points']}, "
         f"root_lock={stats.get('normal_root_locks', 0)}, "
         f"turn={stats.get('angle_limited_rods', 0)}, "
+        f"lower_free={stats.get('lower_free_rods', 0)}, "
         f"tip_down={stats['avg_tip_down_dot']:.3f}",
     )
 
