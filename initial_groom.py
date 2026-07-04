@@ -427,19 +427,13 @@ def settle_hair_back(
         for _pass in range(3):
             surface_run = 0.0
             for j, seg_len in enumerate(seg_lens):
-                base_direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 direction = new[j + 1] - new[j]
                 if direction.length <= 1.0e-9:
-                    direction = base_direction
+                    direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 else:
                     direction.normalize()
-                    nearest = bvh.find_nearest(new[j], follow_radius_m)
-                    if nearest is None:
-                        direction = base_direction
-                    else:
-                        _loc, normal, _index, dist = nearest
-                        if normal is None or dist is None or dist >= follow_radius_m or direction.z > -0.35:
-                            direction = base_direction
+                    if direction.z > -0.35:
+                        direction = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 direction, surface_run, in_surface = choose_direction(new[j], direction, surface_run)
                 if not in_surface:
                     surface_run = 0.0

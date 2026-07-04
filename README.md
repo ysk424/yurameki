@@ -1,9 +1,9 @@
-# Yurameki 0.4.17
+# Yurameki 0.4.19
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.4.17 is the first prototype step for the new CUDA hair solver.
+Yurameki 0.4.19 is the final 0.4 prototype build for the new CUDA hair solver.
 
 This version intentionally removes the previous solver implementation.  It only
 contains the Blender interface needed before CUDA work starts:
@@ -31,7 +31,7 @@ total hit count.
 This is a detection-only milestone.  Hair response and hair-vs-hair contact
 rules come after collider detection is visible and measurable.
 
-## 0.4.17 initial groom
+## 0.4.19 initial groom
 
 `Settle Hair Back` is now a CPU BVH initial-groom pass.  It is not the old repeated gravity settle.  It lays selected lower-Z root strands behind the body, keeps segment lengths fixed, slides briefly along body surfaces, and releases back to vertical falling only when the whole 2cm probe path is outside the body by signed nearest-normal clearance.
 
@@ -47,9 +47,10 @@ next target direction; upward candidates are reset to the base falling curve.
 The same clamp now also catches nearly horizontal and weakly downward
 directions, so surface-avoidance remnants do not continue straight for several
 segments after they are clear of the collider.
-When refinement points are already far from the collider, the desired direction
-now returns to the base falling curve instead of preserving the previous
-avoidance direction.
+
+This is the final 0.4 groom build. Remaining small raised areas are expected to
+be handled by a later gravity simulation pass rather than more initial-groom
+heuristics.
 
 Recommended first test values:
 
