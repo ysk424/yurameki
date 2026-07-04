@@ -583,11 +583,7 @@ def settle_hair_back(
             if loc is None or normal is None or normal.length <= 1.0e-7:
                 return None
             normal = normal.normalized()
-            root_offset = old[0] - loc
-            if root_offset.length > 1.0e-7:
-                if root_offset.dot(normal) < 0.0:
-                    normal.negate()
-            elif normal.dot(head_radial_direction(old[0])) < 0.0:
+            if normal.dot(head_radial_direction(old[0])) < 0.0:
                 normal.negate()
             stats["normal_root_locks"] += 1
             return old[0] + normal * seg_lens[0]

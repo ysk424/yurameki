@@ -1,9 +1,9 @@
-# Yurameki 0.5.5
+# Yurameki 0.5.7
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.5 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.7 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -89,6 +89,10 @@ The 0.5.5 package limits normal groom direction changes between adjacent rods to
 `1 radian`. The limit is applied only before collision solving; inside-collider
 push-out and final penetration repair remain higher priority and are not clamped
 back by this angle rule.
+
+The 0.5.7 package keeps the cylinder-0/root rod start point unchanged, but
+forces the locked root normal to face the head-outward direction before placing
+point 1.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

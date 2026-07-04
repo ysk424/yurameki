@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.5.
+Current version: 0.5.7.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.5.zip` after the next build.
+- Latest package: `dist/yurameki-0.5.7.zip`.
 - `Simulate Gravity` is the first frame-range gravity bake path. It buffers
   simulated frames in memory and bakes Curves position keyframes after compute.
 - `Settle Hair Back` no longer exposes `Outside mm` in the UI. Each segment now
@@ -41,6 +41,28 @@ it becomes useful.
 - Adjacent rod direction changes are limited to `1 radian` during normal groom
   direction selection. This limit is intentionally not re-applied after collider
   push-out or final penetration repair.
+- The locked root rod keeps the original root position and uses the collider
+  normal direction, but its sign is forced toward the head-outward radial
+  direction before placing point 1.
+
+## Rejected 0.5.6 final-guard experiment
+
+After 0.5.5, a bounded fixed-length sphere search was tested as a final-guard
+repair: after a push-out, the candidate was reprojected to the rod length,
+rechecked, and then several directions on the sphere around the previous joint
+were searched if the candidate was still penetrating.
+
+This was pulled back.  It was finite, not an infinite loop, but it was slow in
+the single-threaded Python initial groom and it did not produce usable hair.
+The inside-view result showed two different failure modes:
+
+- front/bangs: short hairs became hooked or curled inside the scalp;
+- side/back: longer hairs still appeared inside the head region, including near
+  the eye-side interior view.
+
+Do not reintroduce this method as-is.  The next approach should treat these as
+separate cases instead of trying to repair every failure by broad angular search
+at the final guard.
 
 ## Verified Before Break
 
@@ -63,7 +85,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.5.zip`, then:
+In Blender, install/use `yurameki-0.5.7.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Collider`.
