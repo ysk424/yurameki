@@ -1,9 +1,9 @@
-# Yurameki 0.5.13
+# Yurameki 0.5.14
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.13 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.14 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -126,6 +126,11 @@ The 0.5.13 package makes surface release require the existing internal
 `release_clearance_m` instead of only checking that probe samples are outside
 the collider. This keeps shallow outside paths from being accepted when they are
 visually too close to the skin.
+
+The 0.5.14 temporary package removes the left/right ear protrusion region from
+the generated collider proxy before hole filling. The source body mesh is not
+changed. This intentionally sacrifices ear collision in favor of cleaner hair
+shaping around the sides of the head.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

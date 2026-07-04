@@ -104,6 +104,7 @@ def _check_hair(context):
         f"Check PASS: {strands} strands, {point_text}, "
         f"proxy={proxy_stats['proxy_name']}, "
         f"filled={proxy_stats['faces_added']} faces, "
+        f"ears={proxy_stats.get('ear_faces_removed', 0)}, "
         f"boundary={proxy_stats['boundary_edges_after']}",
     )
 

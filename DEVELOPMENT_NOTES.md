@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.13.
+Current version: 0.5.14.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.13.zip`.
+- Latest package: `dist/yurameki-0.5.14.zip`.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -38,6 +38,10 @@ it becomes useful.
   release probe path instead of accepting any non-negative outside distance.
   This keeps shallow outside paths from visually cutting through the skin after
   `back_down` release.
+- The 0.5.14 temporary proxy build removes the left/right ear protrusion region
+  from the generated collider proxy before boundary holes are filled. This is a
+  grooming-first tradeoff: ear collisions may be ignored, but side hair should
+  no longer be pushed outward by ear geometry.
 - When a valid head-region collider normal is found, rod 1 is now locked as a
   scalp-emergence anchor: point 0 remains the root and point 1 is placed one
   segment length along the oriented collider normal. Later settle/refinement
@@ -140,6 +144,23 @@ The 0.5.13 change makes `release_path_outside_enough()` use the existing
 `release_clearance_m` parameter, so release means visually clear rather than
 merely outside.
 
+## 0.5.14 temporary earless proxy
+
+The side hair still formed visible side protrusions after 0.5.13.  For a
+temporary grooming-first test, the generated collider proxy now deletes face
+centers in the head-side ear band before filling holes:
+
+```text
+1.50 m <= world Z <= 1.72 m
+abs(world X) >= 0.09 m
+```
+
+This does not modify `CC_Base_Body`.  It only changes
+`CC_Base_Body_yurameki_proxy` when `Check` rebuilds the proxy.  The `Check`
+status reports the removed ear face count as `ears=...`.  This is intentionally
+not a final anatomical collider; it prioritizes smoother hair shaping over ear
+collision.
+
 ## Rejected 0.5.6 final-guard experiment
 
 After 0.5.5, a bounded fixed-length sphere search was tested as a final-guard
@@ -180,7 +201,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.13.zip`, then:
+In Blender, install/use `yurameki-0.5.14.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Collider`.

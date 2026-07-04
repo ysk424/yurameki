@@ -13,6 +13,10 @@ import bpy
 PROXY_FLAG = "yurameki_collider_proxy"
 PROXY_SOURCE = "yurameki_collider_proxy_source"
 
+EAR_CUT_Z_MIN = 1.50
+EAR_CUT_Z_MAX = 1.72
+EAR_CUT_ABS_X = 0.09
+
 
 def _mesh_boundary_count(mesh) -> int:
     bm = bmesh.new()
@@ -40,6 +44,31 @@ def _fill_boundary_holes(mesh) -> tuple[int, int, int]:
         faces_after = len(bm.faces)
         boundary_after = sum(1 for edge in bm.edges if edge.is_boundary)
         return boundary_before, boundary_after, faces_after - faces_before
+    finally:
+        bm.free()
+
+
+def _remove_ear_protrusions(proxy_obj) -> int:
+    mesh = proxy_obj.data
+    world = proxy_obj.matrix_world.copy()
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        remove_faces = []
+        for face in bm.faces:
+            center = world @ face.calc_center_median()
+            if (
+                EAR_CUT_Z_MIN <= center.z <= EAR_CUT_Z_MAX
+                and abs(center.x) >= EAR_CUT_ABS_X
+            ):
+                remove_faces.append(face)
+        if remove_faces:
+            bmesh.ops.delete(bm, geom=remove_faces, context="FACES")
+            bm.normal_update()
+            bm.to_mesh(mesh)
+            mesh.update()
+        return len(remove_faces)
     finally:
         bm.free()
 
@@ -99,6 +128,7 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
     else:
         bpy.context.scene.collection.objects.link(proxy)
 
+    ear_faces_removed = _remove_ear_protrusions(proxy)
     boundary_before, boundary_after, faces_added = _fill_boundary_holes(proxy.data)
     bpy.context.view_layer.update()
 
@@ -108,5 +138,6 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
         "boundary_edges_before": int(boundary_before),
         "boundary_edges_after": int(boundary_after),
         "faces_added": int(faces_added),
+        "ear_faces_removed": int(ear_faces_removed),
         "modifiers": len(proxy.modifiers),
     }
