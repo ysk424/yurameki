@@ -1,9 +1,9 @@
-# Yurameki 0.5.11
+# Yurameki 0.5.12
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.11 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.12 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -112,6 +112,11 @@ it creates a copied collider proxy, fills all boundary holes on the proxy mesh,
 and stores that proxy for later collider checks. This is the first foundation
 step for using a closed manifold-style collision target while leaving the
 existing groom heuristics unchanged.
+
+The 0.5.12 package keeps root emergence protection only on cylinder 0. Cylinder
+1 now returns to the normal back/down groom direction, so the first bend can use
+the existing 1 radian turn limit instead of preserving an upward source
+emergence direction for two rods.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

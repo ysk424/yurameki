@@ -566,7 +566,7 @@ def settle_hair_back(
             seg_lens.append(length if length > 1.0e-6 else 0.01)
 
         def root_emergence_direction(j: int, base_dir: Vector):
-            if j >= 2 or j + 1 >= len(old):
+            if j >= 1 or j + 1 >= len(old):
                 return base_dir, False
             original = old[j + 1] - old[j]
             if original.length <= 1.0e-9:

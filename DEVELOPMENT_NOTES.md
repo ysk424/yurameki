@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.11.
+Current version: 0.5.12.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.11.zip`.
+- Latest package: `dist/yurameki-0.5.12.zip`.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -30,10 +30,10 @@ it becomes useful.
   has a final penetration guard after normal push iterations: endpoint inside,
   direct segment ray hit, and 25%/50%/75% inside samples are checked before the
   candidate is accepted.
-- Top-of-head root emergence is protected: for the first two rods, an original
-  outward-growing strand direction is preserved before blending back to the
-  normal back/down groom curve. Those protected root rods also use shallow
-  5%/10%/20% final-guard samples.
+- Top-of-head root emergence is protected only for cylinder 0. Cylinder 1 now
+  returns to the normal back/down groom curve so it can bend by the existing
+  `1 radian` turn limit instead of carrying an upward source emergence
+  direction.
 - When a valid head-region collider normal is found, rod 1 is now locked as a
   scalp-emergence anchor: point 0 remains the root and point 1 is placed one
   segment length along the oriented collider normal. Later settle/refinement
@@ -110,7 +110,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.11.zip`, then:
+In Blender, install/use `yurameki-0.5.12.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Collider`.
