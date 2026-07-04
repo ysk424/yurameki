@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.7.
+Current version: 0.5.10.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.7.zip`.
+- Latest package: `dist/yurameki-0.5.10.zip`.
 - `Simulate Gravity` is the first frame-range gravity bake path. It buffers
   simulated frames in memory and bakes Curves position keyframes after compute.
 - `Settle Hair Back` no longer exposes `Outside mm` in the UI. Each segment now
@@ -44,6 +44,14 @@ it becomes useful.
 - The locked root rod keeps the original root position and uses the collider
   normal direction, but its sign is forced toward the head-outward radial
   direction before placing point 1.
+- Root-emergence direction checks now use the same head-outward normal sign
+  correction before comparing the original root rod direction with the nearest
+  collider normal. This keeps the cylinder-0 direction fix scoped to normal
+  orientation only.
+- The settle pass now caches each strand's original cylinder-0 direction before
+  changing any Curves points. This cached source direction is used first when
+  choosing the sign of collider normals at the root; the head radial direction is
+  only a fallback when the source rod direction is unavailable.
 
 ## Rejected 0.5.6 final-guard experiment
 
@@ -85,7 +93,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.7.zip`, then:
+In Blender, install/use `yurameki-0.5.10.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Collider`.

@@ -1,9 +1,9 @@
-# Yurameki 0.5.7
+# Yurameki 0.5.10
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.7 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.10 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -93,6 +93,15 @@ back by this angle rule.
 The 0.5.7 package keeps the cylinder-0/root rod start point unchanged, but
 forces the locked root normal to face the head-outward direction before placing
 point 1.
+
+The 0.5.9 package applies the same head-outward normal sign correction to the
+root-emergence direction test, so cylinder 0 cannot be accepted as outward
+because of a flipped nearest-surface normal.
+
+The 0.5.10 package caches each strand's original cylinder-0 direction before
+the settle pass changes any Curves points.  That cached source direction is used
+as the primary guide for root normal sign, with the head radial direction kept
+only as a fallback.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

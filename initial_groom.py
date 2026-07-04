@@ -140,6 +140,18 @@ def settle_hair_back(
         world_m @ Vector((flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]))
         for i in range(n_total)
     ]
+    root_outward_dirs: list[Vector | None] = []
+    for start, count in spans:
+        if count < 2:
+            root_outward_dirs.append(None)
+            continue
+        direction = world_pts[start + 1] - world_pts[start]
+        if direction.length <= 1.0e-9:
+            root_outward_dirs.append(None)
+            continue
+        direction.normalize()
+        root_outward_dirs.append(direction)
+
     bvh = _body_bvh(collider_obj)
     bbox_world = [collider_obj.matrix_world @ Vector(corner) for corner in collider_obj.bound_box]
     bbox_min = Vector((
@@ -264,6 +276,13 @@ def settle_hair_back(
             direction = BACK.copy()
         direction.normalize()
         return direction
+
+    def outward_head_normal(point: Vector, normal: Vector, guide_dir: Vector | None = None) -> Vector:
+        outward = normal.normalized()
+        guide = guide_dir if guide_dir is not None and guide_dir.length > 1.0e-7 else head_radial_direction(point)
+        if outward.dot(guide) < 0.0:
+            outward.negate()
+        return outward
 
     def push_direction(point: Vector, normal: Vector | None) -> Vector:
         if point.z >= head_region_min_z:
@@ -560,7 +579,8 @@ def settle_hair_back(
             if nearest is not None:
                 _loc, normal, _index, _dist = nearest
                 if normal is not None and normal.length > 1.0e-7:
-                    is_outward = is_outward or original.dot(normal.normalized()) > 0.10
+                    normal = outward_head_normal(old[j], normal, root_outward_dirs[si])
+                    is_outward = is_outward or original.dot(normal) > 0.10
             if not is_outward:
                 return base_dir, False
 
@@ -582,9 +602,7 @@ def settle_hair_back(
             loc, normal, _index, _dist = nearest
             if loc is None or normal is None or normal.length <= 1.0e-7:
                 return None
-            normal = normal.normalized()
-            if normal.dot(head_radial_direction(old[0])) < 0.0:
-                normal.negate()
+            normal = outward_head_normal(old[0], normal, root_outward_dirs[si])
             stats["normal_root_locks"] += 1
             return old[0] + normal * seg_lens[0]
 
