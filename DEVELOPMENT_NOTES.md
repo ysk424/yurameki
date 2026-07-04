@@ -161,6 +161,11 @@ status reports the removed ear face count as `ears=...`.  This is intentionally
 not a final anatomical collider; it prioritizes smoother hair shaping over ear
 collision.
 
+Manual review after the 0.5.14 test accepted the head/face result as good
+enough for this phase.  Treat the neck-up groom as complete for now.  Do not
+continue tuning head, eye, or ear collision unless a later change regresses the
+accepted look.
+
 ## Rejected 0.5.6 final-guard experiment
 
 After 0.5.5, a bounded fixed-length sphere search was tested as a final-guard
@@ -217,10 +222,26 @@ first correctness pass.
 
 ## Intended Order
 
-1. Finish 1 cm cylinder FK.
-2. Make CUDA collider avoidance visually usable.
-3. Add hair-vs-hair collision using the fixed solve order.
-4. Optimize collider broadphase with CUB radix sort / grid cells.
+1. Add a three-slot input area at the top of the panel: Hair, Body, Clothes.
+2. Treat the current Mesh collider field as the Body collider.
+3. Add the Clothes collider to the body collision path.
+4. Add hair-vs-hair collision using the fixed solve order.
+5. Optimize collider broadphase with CUB radix sort / grid cells.
+
+## Next UI Step
+
+The next implementation pass should reorganize the top input area.  It should
+show three object fields with eyedropper pick buttons:
+
+```text
+Hair    -> current Curves hair input
+Body    -> current Mesh collider input
+Clothes -> new Mesh clothes collider input
+```
+
+The existing `yurameki_collider_obj` should become the Body field rather than a
+generic collider field.  Clothes collision can then be added as a second
+collider source while preserving the current body/proxy behavior.
 
 ## 0.5.0 gravity bake
 

@@ -132,6 +132,10 @@ the generated collider proxy before hole filling. The source body mesh is not
 changed. This intentionally sacrifices ear collision in favor of cleaner hair
 shaping around the sides of the head.
 
+The neck-up groom is accepted for this phase. The next pass will add a Clothes
+collider alongside the current Body collider, with the top input area organized
+as Hair, Body, and Clothes fields.
+
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.
 The same clamp now also catches nearly horizontal and weakly downward
