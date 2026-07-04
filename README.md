@@ -1,9 +1,9 @@
-# Yurameki 0.5.16
+# Yurameki 0.5.17
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.16 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.17 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -148,6 +148,13 @@ skip the back/down release direction, skip forced surface release, and skip the
 adjacent-rod turn limiter. Collider push-out and final penetration guards still
 run, so shoulder and clothes collision is avoided without making the lower hair
 snap into straight groom directions.
+
+The 0.5.17 package changes that lower free-groom target. Below world
+`Z = 1.30 m`, the source strand direction is no longer preserved. The target is
+mostly straight down with a small blend from the previous segment direction,
+while collider push-out and final penetration guards remain active. This reduces
+the radial straightening that can happen after lower hair is pushed away from
+clothes.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

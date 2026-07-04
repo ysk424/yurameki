@@ -648,13 +648,17 @@ def settle_hair_back(
             new.append(first_tip)
             locked_first_rod = True
 
-        def original_segment_direction(j: int, fallback: Vector) -> Vector:
-            if j + 1 >= len(old):
-                direction = fallback.copy()
-            else:
-                direction = old[j + 1] - old[j]
-                if direction.length <= 1.0e-9:
-                    direction = fallback.copy()
+        def lower_free_direction(prev_dir: Vector | None) -> Vector:
+            direction = DOWN.copy()
+            if prev_dir is not None and prev_dir.length > 1.0e-9:
+                follow = prev_dir.normalized()
+                if follow.z > 0.0:
+                    follow.z = 0.0
+                    if follow.length <= 1.0e-9:
+                        follow = DOWN.copy()
+                    else:
+                        follow.normalize()
+                direction = DOWN * 0.82 + follow * 0.18
             if direction.length <= 1.0e-9:
                 direction = DOWN.copy()
             direction.normalize()
@@ -675,8 +679,9 @@ def settle_hair_back(
             seg_len = seg_lens[j]
             t = j / max(1, len(seg_lens) - 1)
             lower_free = segment_in_lower_free_region(j, new[-1])
+            prev_dir = new[-1] - new[-2] if len(new) > 1 else None
             if lower_free:
-                desired_dir = original_segment_direction(j, DOWN)
+                desired_dir = lower_free_direction(prev_dir)
                 has_emergence = False
                 stats["lower_free_rods"] += 1
             else:
@@ -684,7 +689,6 @@ def settle_hair_back(
             direction, surface_run, in_surface = choose_direction(new[-1], desired_dir, surface_run, lower_free=lower_free)
             if not in_surface:
                 surface_run = 0.0
-            prev_dir = new[-1] - new[-2] if len(new) > 1 else None
             if not lower_free:
                 direction, limited = _limit_turn_direction(prev_dir, direction, max_turn_angle_rad)
                 if limited:
@@ -698,9 +702,10 @@ def settle_hair_back(
                     continue
                 base_dir = _base_drop_direction(j / max(1, len(seg_lens) - 1))
                 lower_free = segment_in_lower_free_region(j, new[j], new[j + 1])
+                prev_dir = new[j] - new[j - 1] if j > 0 else None
                 if lower_free:
                     has_emergence = False
-                    direction = original_segment_direction(j, DOWN)
+                    direction = lower_free_direction(prev_dir)
                     stats["lower_free_rods"] += 1
                 else:
                     emergence_dir, has_emergence = root_emergence_direction(j, base_dir)
@@ -716,7 +721,6 @@ def settle_hair_back(
                 direction, surface_run, in_surface = choose_direction(new[j], direction, surface_run, lower_free=lower_free)
                 if not in_surface:
                     surface_run = 0.0
-                prev_dir = new[j] - new[j - 1] if j > 0 else None
                 if not lower_free:
                     direction, limited = _limit_turn_direction(prev_dir, direction, max_turn_angle_rad)
                     if limited:

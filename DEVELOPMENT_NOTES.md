@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.16.
+Current version: 0.5.17.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.16.zip`.
+- Latest package: `dist/yurameki-0.5.17.zip`.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -49,6 +49,9 @@ it becomes useful.
   strand direction and only performs collider avoidance/repair. Back/down
   release, forced release, and the adjacent-rod turn limiter are skipped there
   so shoulder and clothes avoidance does not straighten the lower hair.
+- In 0.5.17 the lower groom region no longer preserves the source strand
+  direction. It uses a mostly-down target with a small previous-segment blend,
+  while retaining collider avoidance and final repair.
 - When a valid head-region collider normal is found, rod 1 is now locked as a
   scalp-emergence anchor: point 0 remains the root and point 1 is placed one
   segment length along the oriented collider normal. Later settle/refinement
@@ -213,7 +216,7 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.16.zip`, then:
+In Blender, install/use `yurameki-0.5.17.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Body`.
@@ -260,6 +263,18 @@ adjacent-rod turn limit.
 
 This keeps the accepted head/face behavior unchanged while reducing the
 straight shoulder-side artifacts caused by clothes avoidance.
+
+## 0.5.17 Lower Free Down Target
+
+The first lower-free pass still kept the original source segment direction as
+the desired direction. That avoided the head groom constraints, but after a
+clothes push-out a horizontal source direction could still make lower hair look
+radial and straight.
+
+The lower-free target now ignores the source segment direction. It uses
+`DOWN * 0.82 + previous_segment * 0.18`, with upward previous-segment Z removed
+before blending. This keeps a small amount of local continuity without letting
+the original hair direction continue the shoulder-side flare.
 
 ## 0.5.0 gravity bake
 
