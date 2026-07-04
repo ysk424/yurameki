@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.10.
+Current version: 0.5.11.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,11 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.10.zip`.
+- Latest package: `dist/yurameki-0.5.11.zip`.
+- `Check` now creates a copied collider proxy and fills all boundary holes on
+  the proxy mesh. Collider operations prefer this proxy when it exists, giving
+  parity checks a closed collision target without changing the groom solver
+  heuristics.
 - `Simulate Gravity` is the first frame-range gravity bake path. It buffers
   simulated frames in memory and bakes Curves position keyframes after compute.
 - `Settle Hair Back` no longer exposes `Outside mm` in the UI. Each segment now
@@ -106,11 +110,11 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.10.zip`, then:
+In Blender, install/use `yurameki-0.5.11.zip`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Collider`.
-3. Press `Check Hair`; it now validates both Curves hair and collider.
+3. Press `Check`; it validates Curves hair and builds the filled collider proxy.
 4. Press `Detect CUDA Collider`; this is the preparation/check step.
 5. Set `Start Frame` and `End Frame`.
 6. Press `Simulate Gravity` to compute the frame range in memory and bake

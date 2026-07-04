@@ -1,9 +1,9 @@
-# Yurameki 0.5.10
+# Yurameki 0.5.11
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.10 starts the gravity-bake pass on top of the finalized 0.4.19
+Yurameki 0.5.11 starts the gravity-bake pass on top of the finalized 0.4.19
 initial groom.
 
 This version intentionally removes the previous solver implementation.  It only
@@ -41,7 +41,11 @@ length in FK order, resolves the moving Mesh collider through CUDA capsule/mesh
 avoidance, buffers every simulated frame in memory, then bakes Curves `position`
 keyframes after computation completes.
 
-`Check Hair` validates both the Curves object and selected Mesh collider.
+`Check` validates both the Curves object and selected Mesh collider, then builds
+a filled collider proxy. The proxy keeps the source object's modifiers but uses
+its own mesh copy with boundary holes filled, so parity-based inside/outside
+tests can treat the collider as closed. Later collider operations prefer this
+proxy when it is available.
 `Detect CUDA Collider` is the preparation/check step before simulation.
 
 The current subframe metric is the world-space movement of the last root in
@@ -102,6 +106,12 @@ The 0.5.10 package caches each strand's original cylinder-0 direction before
 the settle pass changes any Curves points.  That cached source direction is used
 as the primary guide for root normal sign, with the head radial direction kept
 only as a fallback.
+
+The 0.5.11 package changes the former `Check Hair` button to `Check`. Pressing
+it creates a copied collider proxy, fills all boundary holes on the proxy mesh,
+and stores that proxy for later collider checks. This is the first foundation
+step for using a closed manifold-style collision target while leaving the
+existing groom heuristics unchanged.
 
 Refinement passes no longer reuse an upward-pointing segment direction as the
 next target direction; upward candidates are reset to the base falling curve.

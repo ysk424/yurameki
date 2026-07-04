@@ -56,25 +56,56 @@ def _solver_kwargs(context, pps: int) -> dict:
     )
 
 
+def _source_collider(context):
+    wm = context.window_manager
+    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    return collider if collider is not None and collider.type == "MESH" else None
+
+
+def _compute_collider(context):
+    from . import collider_proxy
+
+    source = _source_collider(context)
+    if source is None:
+        return None
+    proxy = collider_proxy.get_valid_proxy(
+        source,
+        getattr(context.window_manager, "yurameki_collider_proxy_obj", ""),
+    )
+    return proxy if proxy is not None else source
+
+
 def _check_hair(context):
+    from . import collider_proxy
+
     obj = _find_curves_obj(context)
     if obj is None:
         return False, "Pick one Hair Curves object"
-    wm = context.window_manager
-    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
-    if collider is None or collider.type != "MESH":
-        return False, "Hair Check failed: set a Mesh collider object first"
+    collider = _source_collider(context)
+    if collider is None:
+        return False, "Check failed: set a Mesh collider object first"
     try:
         pps, strands = _points_per_strand(obj)
+        proxy_stats = collider_proxy.build_filled_proxy(
+            collider,
+            getattr(context.window_manager, "yurameki_collider_proxy_obj", ""),
+        )
     except Exception as exc:
-        return False, f"Hair Check failed: {exc}"
+        return False, f"Check failed: {exc}"
     context.window_manager.yurameki_points_per_strand = pps
+    context.window_manager.yurameki_collider_proxy_obj = proxy_stats["proxy_name"]
     lengths = sorted({length for _start, length in _curve_spans(obj.data)})
     if len(lengths) == 1:
         point_text = f"{pps} points"
     else:
         point_text = f"{lengths[0]}-{lengths[-1]} points"
-    return True, f"Hair Check PASS: {strands} strands, {point_text}, collider={collider.name}"
+    return (
+        True,
+        f"Check PASS: {strands} strands, {point_text}, "
+        f"proxy={proxy_stats['proxy_name']}, "
+        f"filled={proxy_stats['faces_added']} faces, "
+        f"boundary={proxy_stats['boundary_edges_after']}",
+    )
 
 
 def _apply_solver_step(context):
@@ -85,7 +116,7 @@ def _apply_solver_step(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    collider = _compute_collider(context)
     try:
         pps, _strands = _points_per_strand(obj)
         step_index = int(wm.yurameki_solver_step_index)
@@ -133,7 +164,7 @@ def _settle_hair_to_back(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    collider = _compute_collider(context)
     if collider is None or collider.type != "MESH":
         return False, "Set a Mesh collider object first"
     try:
@@ -167,7 +198,7 @@ def _detect_cuda_collider(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    collider = _compute_collider(context)
     if collider is None or collider.type != "MESH":
         return False, "Set a Mesh collider object first"
     try:
@@ -196,7 +227,7 @@ def _simulate_gravity(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     wm = context.window_manager
-    collider = bpy.data.objects.get(wm.yurameki_collider_obj.strip())
+    collider = _compute_collider(context)
     if collider is None or collider.type != "MESH":
         return False, "Set a Mesh collider object first"
     try:
@@ -224,8 +255,8 @@ def _simulate_gravity(context):
 
 class YURAMEKI_OT_check_hair(Operator):
     bl_idname = "yurameki.check_hair"
-    bl_label = "Check Hair"
-    bl_description = "Validate Curves hair input for the prototype solver"
+    bl_label = "Check"
+    bl_description = "Validate inputs and build a filled collider proxy"
 
     def execute(self, context):
         ok, message = _check_hair(context)
@@ -293,6 +324,10 @@ class YURAMEKI_OT_pick_collider(Operator):
         if obj is None or obj.type != "MESH":
             self.report({"ERROR"}, "Active object must be a mesh")
             return {"CANCELLED"}
+        from . import collider_proxy
+
+        collider_proxy.clear_proxy(getattr(context.window_manager, "yurameki_collider_proxy_obj", ""))
+        context.window_manager.yurameki_collider_proxy_obj = ""
         context.window_manager.yurameki_collider_obj = obj.name
         self.report({"INFO"}, f"Collider: {obj.name}")
         return {"FINISHED"}
@@ -347,6 +382,7 @@ _PROP_NAMES = (
     "yurameki_groom_release_mm",
     "yurameki_cylinder_length_cm",
     "yurameki_collider_obj",
+    "yurameki_collider_proxy_obj",
     "yurameki_collider_radius_mm",
     "yurameki_collider_substeps",
     "yurameki_collider_max_move_mm",
@@ -378,8 +414,8 @@ def register():
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_hair_check_status = StringProperty(
-            name="Hair Check",
-            default="Hair not checked",
+            name="Check",
+            default="Not checked",
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_curves_obj = StringProperty(
@@ -469,6 +505,11 @@ def register():
         WindowManager.yurameki_collider_obj = StringProperty(
             name="Collider",
             default=str(defaults.get("COLLIDER_OBJECT", "")),
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_collider_proxy_obj = StringProperty(
+            name="Collider Proxy",
+            default="",
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_collider_radius_mm = FloatProperty(
