@@ -53,6 +53,19 @@ it becomes useful.
   choosing the sign of collider normals at the root; the head radial direction is
   only a fallback when the source rod direction is unavailable.
 
+## Rejected 0.5.10 direct root-source direction experiment
+
+After 0.5.10 was pushed, an unpushed test changed the locked root rod so point 1
+used the cached original cylinder-0 direction directly whenever that direction
+moved farther from the approximate head center.  The intent was to stop treating
+the scalp/root rod through collider-normal interpretation.
+
+This was pulled back.  The visual result increased scalp penetration.  Keep the
+pushed 0.5.10 behavior: use the cached source cylinder-0 direction to orient the
+collider normal sign, but still place the locked root rod along the oriented
+collider normal.  Do not reintroduce the direct source-direction root lock
+without a separate proof that it reduces penetration on the scalp test scene.
+
 ## Rejected 0.5.6 final-guard experiment
 
 After 0.5.5, a bounded fixed-length sphere search was tested as a final-guard
