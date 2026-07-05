@@ -70,10 +70,16 @@ class YURAMEKI_PT_main(Panel):
         col.operator("yurameki.settle_hair_to_back", text="Settle Hair Back", icon="MOD_CLOTH")
 
         box = layout.box()
-        box.label(text="Gravity Bake")
+        box.label(text="Simulate")
         col = box.column(align=True)
         col.prop(wm, "yurameki_sim_start_frame")
         col.prop(wm, "yurameki_sim_end_frame")
+        col.prop(wm, "yurameki_cylinder_length_cm")
+        col.prop(wm, "yurameki_sim_interpolation_steps")
+        col.prop(wm, "yurameki_sim_propagation_cm")
+        col.prop(wm, "yurameki_sim_memory_height_m")
+        col.prop(wm, "yurameki_sim_memory_strength")
+        col.prop(wm, "yurameki_sim_bake_mode")
         col.operator("yurameki.simulate_gravity", icon="RENDER_ANIMATION")
 
         box = layout.box()

@@ -1,10 +1,10 @@
-# Yurameki 0.5.18
+# Yurameki 0.6.6
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.5.18 starts the gravity-bake pass on top of the finalized 0.4.19
-initial groom.
+Yurameki 0.6.6 redesigns `Simulate` on top of the finalized 0.4.19 initial
+groom and the 0.5.x CUDA collider path.
 
 This version intentionally removes the previous solver implementation.  It only
 contains the Blender interface needed before CUDA work starts:
@@ -17,7 +17,8 @@ contains the Blender interface needed before CUDA work starts:
 - apply a root-pull FK test where only strand roots move and 1 cm cylinders follow
 - call a native CUDA collider detection DLL from Blender
 - apply CUDA collider avoidance with substeps and capped per-step movement
-- simulate a frame range in memory and bake Curves position keyframes
+- simulate a frame range with a subdivided non-stretch chain and bake Curves
+  position keyframes
 
 The probe step moves each cylinder target by `+0.5 mm` on Y and `-3 cm` on Z,
 then reprojects the cylinder back to its fixed length.  This is only a check for
@@ -31,15 +32,27 @@ triangles on CUDA, then uses CUB to reduce the per-cylinder hit flags into a
 total hit count.
 
 Collider avoidance is currently used by both the single-step debug operator and
-the 0.5 gravity bake.
+the 0.6 chain simulation.
 
-## 0.5.x gravity bake
+## 0.6.0 Simulate
 
-`Simulate Gravity` starts from the current lowered hair state. It follows the
-evaluated root positions for each frame, applies gravity, preserves segment
-length in FK order, resolves the moving Mesh collider through CUDA capsule/mesh
-avoidance, buffers every simulated frame in memory, then bakes Curves `position`
-keyframes after computation completes.
+`Simulate` starts from the current lowered hair state. It subdivides every
+source strand internally (`Interpolation` defaults to `1`), follows evaluated
+root positions for each frame, keeps cylinder 0 in its current direction, then
+propagates the cylinder-0 tip movement down the chain with a linear falloff.
+The default propagation distance is `50 cm`, so root motion reaches zero around
+that chain distance.
+
+The chain is non-stretch. Each segment is solved from root to tip in FK order by
+projecting the desired motion back to the stored segment length. This is not an
+XPBD model. Hair always has a downward bias through `Gravity Step mm`; root
+motion is followed with distance falloff, while aerodynamic drag is reserved for
+a later solver layer.
+
+CUDA resolves collider avoidance after an AABB overlap prefilter between the
+hair capsule and collider triangle. Hair-hair collision is not implemented in
+0.6.0; strands are independent except for the deterministic root-Z ordering used
+by the existing solver preparation path.
 
 `Check` validates the Curves object, Body mesh, and optional Clothes mesh, then
 builds a filled Body collider proxy. The proxy keeps the source object's
@@ -49,11 +62,49 @@ collider operations prefer this proxy when it is available and add the Clothes
 mesh as a second collider source.
 `Detect CUDA Collider` is the preparation/check step before simulation.
 
-The current subframe metric is the world-space movement of the last root in
-root-Z order. Up to `1 mm` uses one substep; `4.5 mm` uses five substeps.
+The current subframe metric is the maximum world-space root movement across the
+hair. Up to `1 mm` uses one substep; `4.5 mm` uses five substeps.
 
-Hair-hair collision is not implemented yet. The first 0.5 pass prioritizes
-body collider avoidance and preventing segment stretch.
+The 0.6.1 package fixes Curves position baking on Blender 5.x by inserting
+keyframes from the Curves datablock with explicit attribute data paths.
+
+The 0.6.2 package adds `Bake: Final Only` as the default. This writes only the
+final simulated frame back to the Hair Curves data and avoids creating hundreds
+of thousands of Blender FCurves during quick tests. Use `Bake: Keyframes` only
+when an actual frame-by-frame Curves animation bake is needed.
+
+It also writes simulated world-space points back through the stored evaluated
+minus original Curves offset for each frame, so surface-deform style modifiers
+are not applied twice during bake.
+
+The 0.6.3 package raises default gravity from `1 mm` to `5 mm` per simulation
+frame and allows up to `50 mm` for quick tuning. For short test ranges, try
+`5-20 mm` before changing other parameters.
+
+The 0.6.4 package adds upper-shape memory for long straight hair. At simulation
+start, points above `Memory Height m` (`1.5 m` by default) are marked as the
+saved top groom. During CUDA chain solving, those upper points are pulled toward
+the evaluated Curves shape with `Memory Strength`, while lower points are left
+to fall by gravity as non-stretch chain links and only avoid colliders. This is
+intentional style physics for waist-length straight hair, not a general hair
+simulation model.
+
+The 0.6.5 package changes collider crossing response to a traditional
+segment/triangle continuous collision style. When a chain segment crosses a
+collider triangle, CUDA now treats the earliest crossing as contact and slides
+the fixed-length segment along the surface instead of merely pushing the
+already-crossed endpoint by a small distance. The preferred slide direction is
+down the surface, then backward if the surface is horizontal. Collider
+`Substeps` now defaults to `1`; increase it only when a strand has to resolve
+multiple nearby surfaces in one step.
+
+The 0.6.6 package fixes the Simulate chain subdivision. Simulation points are
+now resampled by `Cylinder Length cm` as a maximum link length, with
+`Interpolation` kept as a minimum per-source-segment subdivision count. A 1 cm
+setting therefore creates about 1 cm links instead of merely splitting Blender's
+original 5 cm curve spans in half. CUDA collision also checks the tip motion
+from the previous position to the candidate position, reducing missed cloth/body
+crossings when a point jumps across a surface between frames.
 
 ## 0.4.19 initial groom
 

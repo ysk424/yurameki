@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.5.18.
+Current version: 0.6.6.
 
 Branch: custom-cpp-cuda.
 
@@ -19,13 +19,57 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: `dist/yurameki-0.5.18.zip`.
+- Latest package: source tree `0.6.6`; build the native DLL before packaging.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
   heuristics.
-- `Simulate Gravity` is the first frame-range gravity bake path. It buffers
-  simulated frames in memory and bakes Curves position keyframes after compute.
+- `Simulate` is now the 0.6 fixed-chain frame-range path. It subdivides source
+  strands internally, keeps cylinder 0 in its current direction, propagates the
+  cylinder-0 tip movement linearly toward zero at the configured chain distance,
+  applies parametric gravity, resolves collider avoidance on CUDA, buffers
+  simulated frames in memory, and bakes Curves position keyframes after compute.
+- CUDA collider exact distance checks are now guarded by capsule/triangle AABB
+  overlap tests. This is the first broadphase step; no hair-hair collision is
+  present in 0.6.0.
+- The 0.6.1 package fixes Blender 5.x Curves position baking by keyframing
+  `attributes["position"].data[i].vector` from the Curves datablock instead of
+  calling `keyframe_insert("vector")` on the attribute value itself.
+- The 0.6.2 package adds a Simulate bake mode. `Final Only` is the default and
+  writes only the final simulated frame to Hair Curves data. `Keyframes` keeps
+  the expensive full Curves position keyframe bake for deliberate animation
+  exports.
+- Simulate bake now stores each frame's evaluated-minus-original Curves offset
+  before writing any results and subtracts that offset when writing back. This
+  prevents surface-deform-style modifiers from being applied twice to simulated
+  world-space points.
+- The 0.6.3 package raises the default Simulate gravity from `1 mm` to `5 mm`
+  and the UI maximum from `10 mm` to `50 mm`. This keeps the current solver in
+  the intended non-XPBD direction: a non-stretch FK chain that always wants to
+  fall downward, follows root motion with falloff/delay, and leaves aerodynamic
+  drag for a later layer.
+- The 0.6.4 package adds Simulate upper-shape memory. At the start frame,
+  subdivided points above `Memory Height m` default `1.5 m` are marked as the
+  saved Settle/top groom shape. Each simulated frame reads the evaluated Curves
+  shape as the moving style target, then CUDA pulls only those marked upper
+  points toward that target by `Memory Strength`. Below the saved height, hair
+  remains an unconstrained non-stretch chain with downward gravity and collider
+  avoidance, so shoulder hair can fall when arms move down.
+- The 0.6.5 package changes Simulate collider response from only short
+  endpoint push-out toward traditional continuous segment/triangle collision
+  for cloth-like surfaces. A segment that crosses a collider triangle now
+  chooses the earliest crossing, orients the contact normal against motion, and
+  projects the fixed-length chain direction to slide along the surface. The
+  preferred fallback slide is down the surface, then backward for near-horizontal
+  cloth/shoulder surfaces. `COLLIDER_SUBSTEPS` defaults to `1`; raise it only
+  when multiple close surfaces must be resolved in a single segment step.
+- The 0.6.6 package fixes Simulate subdivision so the chain is resampled by
+  `Cylinder Length cm` as a maximum link length. `Interpolation` is kept as the
+  minimum number of subdivisions per original source segment, but no longer
+  prevents 1 cm/2 cm chain lengths from being honored. CUDA collision also
+  checks the endpoint sweep from the previous tip position to the candidate tip
+  position, so cloth/body surfaces are less likely to be crossed between
+  frames without contact.
 - `Settle Hair Back` no longer exposes `Outside mm` in the UI. Each segment now
   has a final penetration guard after normal push iterations: endpoint inside,
   direct segment ray hit, and 25%/50%/75% inside samples are checked before the
@@ -218,7 +262,8 @@ avoidance: adjusted tip returned, length error = 0.0
 
 ## Next Manual Test
 
-In Blender, install/use `yurameki-0.5.18.zip`, then:
+In Blender, install/use the 0.6.6 source add-on after rebuilding
+`native/yurameki_cuda_collide.dll`, then:
 
 1. Select `CC_Base_Body` or the intended mesh collider.
 2. Press `Pick Body`.
@@ -226,12 +271,13 @@ In Blender, install/use `yurameki-0.5.18.zip`, then:
 4. Optionally select a clothes mesh and press `Pick Clothes`.
 5. Press `Detect CUDA Collider`; this is the preparation/check step.
 6. Set `Start Frame` and `End Frame`.
-7. Press `Simulate Gravity` to compute the frame range in memory and bake
+7. Keep `Memory Height m` near `1.5` so only the upper groom is remembered.
+8. Press `Simulate` to compute the frame range in memory and bake
    Curves position keyframes after completion.
 
-Important: broadphase uniform grid is not implemented yet.  The current CUDA
-collider path can be slow on full 400k+ triangle meshes because it is still the
-first correctness pass.
+Important: broadphase uniform grid is not implemented yet.  The 0.6.0 CUDA
+collider path uses capsule/triangle AABB rejection before exact distance tests,
+but still scans collider triangles inside each kernel.
 
 ## Intended Order
 

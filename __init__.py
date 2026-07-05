@@ -1,4 +1,4 @@
-"""Yurameki 0.5.x -- CUDA straight long-hair solver prototype."""
+"""Yurameki 0.6.x -- CUDA straight long-hair solver prototype."""
 
 from __future__ import annotations
 
@@ -265,14 +265,26 @@ def _simulate_gravity(context):
             radius_m=float(wm.yurameki_collider_radius_mm) * 1.0e-3,
             collider_substeps=int(wm.yurameki_collider_substeps),
             collider_max_move_m=float(wm.yurameki_collider_max_move_mm) * 1.0e-3,
+            target_segment_length_m=float(wm.yurameki_cylinder_length_cm) * 1.0e-2,
+            interpolation_steps=int(wm.yurameki_sim_interpolation_steps),
+            propagation_length_m=float(wm.yurameki_sim_propagation_cm) * 1.0e-2,
+            memory_height_m=float(wm.yurameki_sim_memory_height_m),
+            memory_strength=float(wm.yurameki_sim_memory_strength),
+            bake_mode=wm.yurameki_sim_bake_mode,
         )
     except Exception as exc:
-        return False, f"Gravity simulation failed: {exc!r}"
+        return False, f"Simulation failed: {exc!r}"
     return (
         True,
-        f"Gravity bake: frames={stats.start_frame}-{stats.end_frame}, "
-        f"strands={stats.n_strands}, max_substeps={stats.max_substeps}, "
-        f"root_move={stats.max_root_move_mm:.3f}mm, time={stats.elapsed_sec:.2f}s",
+        f"Simulate: frames={stats.start_frame}-{stats.end_frame}, "
+        f"strands={stats.n_strands}, sim_points={stats.sim_points_per_strand}, "
+        f"seg<={stats.max_segment_mm:.2f}mm/{stats.target_segment_cm:.2f}cm, "
+        f"interp={stats.interpolation_steps}, "
+        f"prop={stats.propagation_length_cm:.1f}cm, "
+        f"memory>{stats.memory_height_m:.2f}m/{stats.memory_strength:.2f}, "
+        f"bake={stats.bake_mode.lower()}, "
+        f"max_substeps={stats.max_substeps}, root_move={stats.max_root_move_mm:.3f}mm, "
+        f"hits={stats.total_hits}, time={stats.elapsed_sec:.2f}s",
     )
 
 
@@ -384,8 +396,8 @@ class YURAMEKI_OT_detect_cuda_collider(Operator):
 
 class YURAMEKI_OT_simulate_gravity(Operator):
     bl_idname = "yurameki.simulate_gravity"
-    bl_label = "Simulate Gravity"
-    bl_description = "Simulate the selected frame range in memory and bake Curves position keyframes"
+    bl_label = "Simulate"
+    bl_description = "Simulate the selected frame range with the V0.6 fixed chain and bake Curves position keyframes"
 
     def execute(self, context):
         ok, message = _simulate_gravity(context)
@@ -416,6 +428,11 @@ _PROP_NAMES = (
     "yurameki_gravity_blend_steps",
     "yurameki_sim_start_frame",
     "yurameki_sim_end_frame",
+    "yurameki_sim_interpolation_steps",
+    "yurameki_sim_propagation_cm",
+    "yurameki_sim_memory_height_m",
+    "yurameki_sim_memory_strength",
+    "yurameki_sim_bake_mode",
     "yurameki_groom_radius_mm",
     "yurameki_groom_follow_mm",
     "yurameki_groom_release_mm",
@@ -483,9 +500,9 @@ def register():
         )
         WindowManager.yurameki_gravity_step_mm = FloatProperty(
             name="Gravity Step mm",
-            default=float(defaults.get("GRAVITY_STEP_MM", 1.0)),
+            default=float(defaults.get("GRAVITY_STEP_MM", 5.0)),
             min=0.0,
-            max=10.0,
+            max=50.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
@@ -508,6 +525,46 @@ def register():
             default=int(defaults.get("SIM_END_FRAME", 24)),
             min=-1048574,
             max=1048574,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_interpolation_steps = IntProperty(
+            name="Interpolation",
+            default=int(defaults.get("SIM_INTERPOLATION_STEPS", 1)),
+            min=0,
+            max=8,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_propagation_cm = FloatProperty(
+            name="Propagation cm",
+            default=float(defaults.get("SIM_PROPAGATION_CM", 50.0)),
+            min=1.0,
+            max=300.0,
+            precision=2,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_memory_height_m = FloatProperty(
+            name="Memory Height m",
+            default=float(defaults.get("SIM_MEMORY_HEIGHT_M", 1.5)),
+            min=-10.0,
+            max=10.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_memory_strength = FloatProperty(
+            name="Memory Strength",
+            default=float(defaults.get("SIM_MEMORY_STRENGTH", 0.55)),
+            min=0.0,
+            max=1.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_bake_mode = EnumProperty(
+            name="Bake",
+            items=(
+                ("FINAL", "Final Only", "Write only the final simulated frame to the Curves data"),
+                ("KEYFRAMES", "Keyframes", "Bake every simulated frame as Curves position keyframes"),
+            ),
+            default=str(defaults.get("SIM_BAKE_MODE", "FINAL")),
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_groom_radius_mm = FloatProperty(
@@ -567,7 +624,7 @@ def register():
         )
         WindowManager.yurameki_collider_substeps = IntProperty(
             name="Substeps",
-            default=int(defaults.get("COLLIDER_SUBSTEPS", 8)),
+            default=int(defaults.get("COLLIDER_SUBSTEPS", 1)),
             min=1,
             max=128,
             options={"SKIP_SAVE"},
