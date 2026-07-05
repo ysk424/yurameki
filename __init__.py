@@ -178,40 +178,6 @@ def _apply_solver_step(context):
     )
 
 
-def _settle_hair_to_back(context):
-    from . import initial_groom
-
-    obj = _find_curves_obj(context)
-    if obj is None:
-        return False, "Pick one Hair Curves object"
-    wm = context.window_manager
-    colliders = _compute_colliders(context)
-    if not colliders:
-        return False, "Set a Body mesh first"
-    try:
-        stats = initial_groom.settle_hair_back(
-            obj,
-            colliders,
-            max_strands=0,
-            collision_radius_m=float(wm.yurameki_groom_radius_mm) * 1.0e-3,
-            follow_radius_m=float(wm.yurameki_groom_follow_mm) * 1.0e-3,
-            release_probe_m=float(wm.yurameki_groom_release_mm) * 1.0e-3,
-        )
-    except Exception as exc:
-        return False, f"Settle hair failed: {exc!r}"
-    return (
-        True,
-        f"Settle Hair Back: strands={stats['processed_strands']}, "
-        f"time={stats['elapsed_sec']:.2f}s, "
-        f"len_err={stats['max_length_error_mm']:.6f}mm, "
-        f"close={stats['remaining_close_points']}, "
-        f"root_lock={stats.get('normal_root_locks', 0)}, "
-        f"turn={stats.get('angle_limited_rods', 0)}, "
-        f"lower_free={stats.get('lower_free_rods', 0)}, "
-        f"tip_down={stats['avg_tip_down_dot']:.3f}",
-    )
-
-
 def _detect_cuda_collider(context):
     from . import cuda_collider
     from . import gravity_sim
@@ -323,17 +289,6 @@ class YURAMEKI_OT_reset_solver_state(Operator):
         return {"FINISHED"}
 
 
-class YURAMEKI_OT_settle_hair_to_back(Operator):
-    bl_idname = "yurameki.settle_hair_to_back"
-    bl_label = "Settle Hair Back"
-    bl_description = "Initial groom: use CPU BVH to lay straight long hair behind the body"
-
-    def execute(self, context):
-        ok, message = _settle_hair_to_back(context)
-        self.report({"INFO"} if ok else {"ERROR"}, message)
-        return {"FINISHED"} if ok else {"CANCELLED"}
-
-
 class YURAMEKI_OT_pick_curves(Operator):
     bl_idname = "yurameki.pick_curves"
     bl_label = "Pick Hair Curves"
@@ -409,7 +364,6 @@ _classes = (
     YURAMEKI_OT_check_hair,
     YURAMEKI_OT_apply_solver_step,
     YURAMEKI_OT_reset_solver_state,
-    YURAMEKI_OT_settle_hair_to_back,
     YURAMEKI_OT_pick_curves,
     YURAMEKI_OT_pick_collider,
     YURAMEKI_OT_pick_clothes,
@@ -433,9 +387,6 @@ _PROP_NAMES = (
     "yurameki_sim_memory_height_m",
     "yurameki_sim_memory_strength",
     "yurameki_sim_bake_mode",
-    "yurameki_groom_radius_mm",
-    "yurameki_groom_follow_mm",
-    "yurameki_groom_release_mm",
     "yurameki_cylinder_length_cm",
     "yurameki_collider_obj",
     "yurameki_collider_proxy_obj",
@@ -565,30 +516,6 @@ def register():
                 ("KEYFRAMES", "Keyframes", "Bake every simulated frame as Curves position keyframes"),
             ),
             default=str(defaults.get("SIM_BAKE_MODE", "FINAL")),
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_groom_radius_mm = FloatProperty(
-            name="Groom Radius mm",
-            default=float(defaults.get("GROOM_RADIUS_MM", 2.5)),
-            min=0.1,
-            max=20.0,
-            precision=3,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_groom_follow_mm = FloatProperty(
-            name="Follow mm",
-            default=float(defaults.get("GROOM_FOLLOW_MM", 30.0)),
-            min=1.0,
-            max=200.0,
-            precision=3,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_groom_release_mm = FloatProperty(
-            name="Release Probe mm",
-            default=float(defaults.get("GROOM_RELEASE_MM", 20.0)),
-            min=1.0,
-            max=200.0,
-            precision=3,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_cylinder_length_cm = FloatProperty(

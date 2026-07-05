@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.6.6.
+Current version: 0.6.7.
 
 Branch: custom-cpp-cuda.
 
@@ -19,7 +19,7 @@ it becomes useful.
 - CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
 - `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
   movement per substep.
-- Latest package: source tree `0.6.6`; build the native DLL before packaging.
+- Latest package: source tree `0.6.7`; build the native DLL before packaging.
 - `Check` now creates a copied collider proxy and fills all boundary holes on
   the proxy mesh. Collider operations prefer this proxy when it exists, giving
   parity checks a closed collision target without changing the groom solver
@@ -70,10 +70,15 @@ it becomes useful.
   checks the endpoint sweep from the previous tip position to the candidate tip
   position, so cloth/body surfaces are less likely to be crossed between
   frames without contact.
-- `Settle Hair Back` no longer exposes `Outside mm` in the UI. Each segment now
-  has a final penetration guard after normal push iterations: endpoint inside,
-  direct segment ray hit, and 25%/50%/75% inside samples are checked before the
-  candidate is accepted.
+- The 0.6.7 package removes `Settle Hair Back` from Yurameki. Initial grooming
+  is now owned by Tokoya 0.6.2, where the same CPU BVH settle code is exposed
+  as a grooming operation with Hair/Body/Clothes pickers and automatic Body
+  proxy creation. Yurameki now focuses on simulating an already-settled
+  long-straight-hair Curves object.
+- Archived Settle note: the moved `Settle Hair Back` code no longer exposed
+  `Outside mm` in the UI. Each segment had a final penetration guard after
+  normal push iterations: endpoint inside, direct segment ray hit, and
+  25%/50%/75% inside samples were checked before the candidate was accepted.
 - Top-of-head root emergence is protected only for cylinder 0. Cylinder 1 now
   returns to the normal back/down groom curve so it can bend by the existing
   `1 radian` turn limit instead of carrying an upward source emergence

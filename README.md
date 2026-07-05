@@ -1,10 +1,11 @@
-# Yurameki 0.6.6
+# Yurameki 0.6.7
 
 Development fork status: active prototype.  This branch is not a production
 release.
 
-Yurameki 0.6.6 redesigns `Simulate` on top of the finalized 0.4.19 initial
-groom and the 0.5.x CUDA collider path.
+Yurameki 0.6.7 keeps the CUDA chain simulation path and removes the initial
+grooming button. Initial long-straight-hair grooming now belongs to Tokoya;
+Yurameki expects a Tokoya-settled Curves object and focuses on simulation.
 
 This version intentionally removes the previous solver implementation.  It only
 contains the Blender interface needed before CUDA work starts:
@@ -19,6 +20,7 @@ contains the Blender interface needed before CUDA work starts:
 - apply CUDA collider avoidance with substeps and capped per-step movement
 - simulate a frame range with a subdivided non-stretch chain and bake Curves
   position keyframes
+- use Tokoya's `Settle Hair Back` for initial grooming before simulation
 
 The probe step moves each cylinder target by `+0.5 mm` on Y and `-3 cm` on Z,
 then reprojects the cylinder back to its fixed length.  This is only a check for
@@ -106,9 +108,17 @@ original 5 cm curve spans in half. CUDA collision also checks the tip motion
 from the previous position to the candidate position, reducing missed cloth/body
 crossings when a point jumps across a surface between frames.
 
-## 0.4.19 initial groom
+The 0.6.7 package moves `Settle Hair Back` out of Yurameki and into Tokoya
+0.6.2. The migrated code is the same CPU BVH initial-groom pass, but the
+responsibility is now clear: Tokoya plants and settles the hair; Yurameki only
+simulates the settled long-straight-hair state.
 
-`Settle Hair Back` is now a CPU BVH initial-groom pass.  It is not the old repeated gravity settle.  It lays selected lower-Z root strands behind the body, keeps segment lengths fixed, slides briefly along body surfaces, and releases back to vertical falling only when the whole 2cm probe path is outside the body by signed nearest-normal clearance.
+## Archived 0.4.19 Initial Groom
+
+This section records the historical grooming algorithm that has moved to
+Tokoya. Yurameki no longer exposes this operator.
+
+`Settle Hair Back` was a CPU BVH initial-groom pass.  It was not the old repeated gravity settle.  It laid selected lower-Z root strands behind the body, kept segment lengths fixed, slid briefly along body surfaces, and released back to vertical falling only when the whole 2cm probe path was outside the body by signed nearest-normal clearance.
 
 This build strengthens penetration handling.  Points are checked with multi-ray
 inside/outside tests, and penetrated head-region points are pushed outward from
