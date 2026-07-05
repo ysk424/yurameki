@@ -49,6 +49,8 @@ class WarpSimStats:
     bake_mode: str
     max_velocity_mps: float
     collision_max_correction_mm: float
+    collision_response: float
+    collision_velocity_damping: float
     device: str
     device_name: str
     device_arch: int
@@ -170,9 +172,11 @@ def _derive_velocity_kernel(
     predicted: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
+    contact_mask: wp.array(dtype=wp.int32),
     dt: float,
     damping: float,
     max_velocity: float,
+    collision_velocity_damping: float,
 ):
     i = wp.tid()
     if inv_mass[i] <= 0.0:
@@ -183,7 +187,18 @@ def _derive_velocity_kernel(
             speed = wp.length(v)
             if speed > max_velocity and speed > 1.0e-9:
                 v = v / speed * max_velocity
+        if contact_mask[i] != 0:
+            contact_keep = 1.0 - collision_velocity_damping
+            if contact_keep < 0.0:
+                contact_keep = 0.0
+            v = v * contact_keep
         vel[i] = v
+
+
+@wp.kernel
+def _clear_contact_mask_kernel(contact_mask: wp.array(dtype=wp.int32)):
+    i = wp.tid()
+    contact_mask[i] = 0
 
 
 @wp.kernel
@@ -213,7 +228,9 @@ def _body_point_collision_kernel(
     margin: float,
     search_distance: float,
     max_correction: float,
+    collision_response: float,
     allow_sweep: int,
+    contact_mask: wp.array(dtype=wp.int32),
     hit_count: wp.array(dtype=wp.int32),
 ):
     i = wp.tid()
@@ -233,7 +250,12 @@ def _body_point_collision_kernel(
         ray = wp.mesh_query_ray(mesh, old_position, direction, distance)
         if ray.result and wp.dot(delta, ray.normal) < 0.0:
             normal = ray.normal
-            new_position = old_position + direction * ray.t + normal * margin
+            target = old_position + direction * ray.t + normal * margin
+            correction = target - new_position
+            correction_length = wp.length(correction)
+            if correction_length > max_correction and correction_length > 1.0e-9:
+                correction = correction / correction_length * max_correction
+            new_position = new_position + correction * collision_response
             contacted = 1
 
     if contacted == 0:
@@ -253,10 +275,11 @@ def _body_point_collision_kernel(
                 correction_length = wp.length(correction)
                 if correction_length > max_correction and correction_length > 1.0e-9:
                     correction = correction / correction_length * max_correction
-                new_position = new_position + correction
+                new_position = new_position + correction * collision_response
                 contacted = 1
 
     if contacted == 1:
+        contact_mask[i] = 1
         velocity = velocities[i]
         normal_speed = wp.dot(velocity, normal)
         if normal_speed < 0.0:
@@ -275,7 +298,9 @@ def _cloth_point_collision_kernel(
     margin: float,
     search_distance: float,
     max_correction: float,
+    collision_response: float,
     allow_sweep: int,
+    contact_mask: wp.array(dtype=wp.int32),
     hit_count: wp.array(dtype=wp.int32),
 ):
     i = wp.tid()
@@ -302,7 +327,7 @@ def _cloth_point_collision_kernel(
             correction_length = wp.length(correction)
             if correction_length > max_correction and correction_length > 1.0e-9:
                 correction = correction / correction_length * max_correction
-            new_position = new_position + correction
+            new_position = new_position + correction * collision_response
             contacted = 1
 
     if contacted == 0:
@@ -320,10 +345,11 @@ def _cloth_point_collision_kernel(
                 correction_length = wp.length(correction)
                 if correction_length > max_correction and correction_length > 1.0e-9:
                     correction = correction / correction_length * max_correction
-                new_position = new_position + correction
+                new_position = new_position + correction * collision_response
                 contacted = 1
 
     if contacted == 1:
+        contact_mask[i] = 1
         velocity = velocities[i]
         normal_speed = wp.dot(velocity, normal)
         if normal_speed < 0.0:
@@ -341,7 +367,9 @@ def _segment_collision_kernel(
     points_per_strand: int,
     margin: float,
     max_correction: float,
+    collision_response: float,
     parity: int,
+    contact_mask: wp.array(dtype=wp.int32),
     hit_count: wp.array(dtype=wp.int32),
 ):
     segment_id = wp.tid()
@@ -372,10 +400,11 @@ def _segment_collision_kernel(
     correction = target - p1
     correction_length = wp.length(correction)
     if correction_length > max_correction and correction_length > 1.0e-9:
-        target = p1 + correction / correction_length * max_correction
+        correction = correction / correction_length * max_correction
 
     if inv_mass[j] > 0.0:
-        predicted[j] = target
+        predicted[j] = p1 + correction * collision_response
+        contact_mask[j] = 1
         velocity = velocities[j]
         normal_speed = wp.dot(velocity, normal)
         if normal_speed < 0.0:
@@ -602,6 +631,7 @@ class WarpJointSimulator:
         self.inv_mass = wp.array(inv_mass, dtype=float, device=self.device)
         self.segment_rest = wp.array(self.seg_rest_np, dtype=float, device=self.device)
         self.bend_rest = wp.array(self.bend_rest_np, dtype=float, device=self.device)
+        self.contact_mask = wp.zeros(self.n_total, dtype=wp.int32, device=self.device)
         self.hit_count = wp.zeros(1, dtype=wp.int32, device=self.device)
 
     def set_targets(self, start: np.ndarray, end: np.ndarray) -> None:
@@ -681,8 +711,10 @@ class WarpJointSimulator:
                     )
 
     def _collide(self, meshes: ColliderMeshSet, margin: float, search_distance: float,
-                 max_correction: float, allow_sweep: bool, segment_passes: int) -> None:
+                 max_correction: float, collision_response: float,
+                 allow_sweep: bool, segment_passes: int) -> None:
         max_correction = max(float(max_correction), 1.0e-6)
+        collision_response = min(max(float(collision_response), 0.0), 1.0)
         if meshes.body is not None:
             wp.launch(
                 _body_point_collision_kernel,
@@ -696,7 +728,9 @@ class WarpJointSimulator:
                     float(margin),
                     float(search_distance),
                     max_correction,
+                    collision_response,
                     int(bool(allow_sweep)),
+                    self.contact_mask,
                     self.hit_count,
                 ],
                 device=self.device,
@@ -714,7 +748,9 @@ class WarpJointSimulator:
                     float(margin),
                     float(search_distance),
                     max_correction,
+                    collision_response,
                     int(bool(allow_sweep)),
+                    self.contact_mask,
                     self.hit_count,
                 ],
                 device=self.device,
@@ -733,7 +769,9 @@ class WarpJointSimulator:
                             self.pps,
                             float(margin),
                             max_correction,
+                            collision_response,
                             parity,
+                            self.contact_mask,
                             self.hit_count,
                         ],
                         device=self.device,
@@ -750,7 +788,9 @@ class WarpJointSimulator:
                             self.pps,
                             float(margin),
                             max_correction,
+                            collision_response,
                             parity,
+                            self.contact_mask,
                             self.hit_count,
                         ],
                         device=self.device,
@@ -772,6 +812,8 @@ class WarpJointSimulator:
         collision_margin: float,
         collision_search: float,
         collision_max_correction: float,
+        collision_response: float,
+        collision_velocity_damping: float,
         collision_passes: int,
         post_collision_iterations: int,
     ) -> tuple[np.ndarray, int, int]:
@@ -802,12 +844,20 @@ class WarpJointSimulator:
                 device=self.device,
             )
             self._solve_constraints(dt, iterations, stretch_compliance, bend_compliance)
+            wp.launch(
+                _clear_contact_mask_kernel,
+                dim=self.n_total,
+                inputs=[self.contact_mask],
+                device=self.device,
+            )
             self._collide(meshes, collision_margin, collision_search,
-                          collision_max_correction, True, collision_passes)
+                          collision_max_correction, collision_response,
+                          True, collision_passes)
             for _ in range(max(0, int(post_collision_iterations))):
                 self._solve_constraints(dt, 1, stretch_compliance, bend_compliance)
                 self._collide(meshes, collision_margin, collision_search,
-                              collision_max_correction, False, collision_passes)
+                              collision_max_correction, collision_response,
+                              False, collision_passes)
             wp.launch(
                 _derive_velocity_kernel,
                 dim=self.n_total,
@@ -816,9 +866,11 @@ class WarpJointSimulator:
                     self.predicted,
                     self.vel,
                     self.inv_mass,
+                    self.contact_mask,
                     dt,
                     float(damping),
                     float(max_velocity),
+                    min(max(float(collision_velocity_damping), 0.0), 1.0),
                 ],
                 device=self.device,
             )
@@ -869,6 +921,8 @@ def simulate(
     collision_margin_m: float,
     collision_search_m: float,
     collision_max_correction_m: float,
+    collision_response: float,
+    collision_velocity_damping: float,
     collision_passes: int,
     post_collision_iterations: int,
     max_move_per_substep_m: float,
@@ -949,6 +1003,8 @@ def simulate(
                 float(collision_margin_m),
                 float(collision_search_m),
                 float(collision_max_correction_m),
+                float(collision_response),
+                float(collision_velocity_damping),
                 int(collision_passes),
                 int(post_collision_iterations),
             )
@@ -982,6 +1038,8 @@ def simulate(
         bake_mode=bake_mode,
         max_velocity_mps=float(max_velocity_mps),
         collision_max_correction_mm=float(collision_max_correction_m) * 1000.0,
+        collision_response=min(max(float(collision_response), 0.0), 1.0),
+        collision_velocity_damping=min(max(float(collision_velocity_damping), 0.0), 1.0),
         device=simulator.device,
         device_name=simulator.device_name,
         device_arch=simulator.device_arch,

@@ -76,6 +76,8 @@ class YURAMEKI_PT_main(Panel):
         col.prop(wm, "yurameki_collision_margin_mm")
         col.prop(wm, "yurameki_collision_search_mm")
         col.prop(wm, "yurameki_collision_max_correction_mm")
+        col.prop(wm, "yurameki_collision_response")
+        col.prop(wm, "yurameki_collision_velocity_damping")
         col.prop(wm, "yurameki_collision_passes")
         col.prop(wm, "yurameki_post_collision_iterations")
         col.prop(wm, "yurameki_auto_substep_mm")

@@ -54,6 +54,11 @@ of calling Blender's per-point keyframe operator.
   enough for Body inside/outside repair, while each correction step is clamped
   to a small distance for stability.
 - `Collision Max Correction mm`: maximum collider push-out per collision pass.
+- `Collision Response`: fraction of the collision position correction applied
+  per pass. The default `1.0` fully repairs penetration.
+- `Collision Velocity Damping`: extra damping for points touched by collision.
+  The default `1.0` stores zero velocity after collider repair, treating the
+  repair as position-error correction rather than a bouncing physical impact.
 - `Collision Passes`: segment collision passes after point collision.
 - `Post Collision Iterations`: extra constraint/collision reconciliation passes.
 - `Auto Substep mm`: maximum constrained-joint motion per substep.
@@ -76,6 +81,9 @@ Collision uses Warp Mesh ray and nearest-point queries. Body and Clothes are
 kept as separate Warp meshes: Body uses signed nearest-surface push-out, Clothes
 uses two-sided unsigned push-out. Segment collision corrections are clamped so a
 long strand cannot teleport an endpoint across the character in one pass.
+Collision-corrected points are marked on the GPU and their derived velocity is
+zeroed by default, so collider repair does not become rebound energy on the next
+substep.
 Hair-hair collision is not implemented.
 
 The operator report includes the actual number of frame transitions and

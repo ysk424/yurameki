@@ -159,6 +159,8 @@ def _simulate(context):
             collision_margin_m=float(wm.yurameki_collision_margin_mm) * 1.0e-3,
             collision_search_m=float(wm.yurameki_collision_search_mm) * 1.0e-3,
             collision_max_correction_m=float(wm.yurameki_collision_max_correction_mm) * 1.0e-3,
+            collision_response=float(wm.yurameki_collision_response),
+            collision_velocity_damping=float(wm.yurameki_collision_velocity_damping),
             collision_passes=int(wm.yurameki_collision_passes),
             post_collision_iterations=int(wm.yurameki_post_collision_iterations),
             max_move_per_substep_m=float(wm.yurameki_auto_substep_mm) * 1.0e-3,
@@ -179,6 +181,8 @@ def _simulate(context):
         f"auto_move={stats.max_auto_move_mm:.3f}mm, "
         f"vmax={stats.max_velocity_mps:.2f}m/s, "
         f"corr<={stats.collision_max_correction_mm:.2f}mm, "
+        f"resp={stats.collision_response:.2f}, "
+        f"contact_damp={stats.collision_velocity_damping:.2f}, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
         f"{stats.device} sm_{stats.device_arch}, "
         f"bake={stats.bake_mode.lower()}, time={stats.elapsed_sec:.2f}s",
@@ -286,6 +290,8 @@ _PROP_NAMES = (
     "yurameki_collision_margin_mm",
     "yurameki_collision_search_mm",
     "yurameki_collision_max_correction_mm",
+    "yurameki_collision_response",
+    "yurameki_collision_velocity_damping",
     "yurameki_collision_passes",
     "yurameki_post_collision_iterations",
     "yurameki_auto_substep_mm",
@@ -443,6 +449,22 @@ def register():
             default=float(defaults.get("COLLISION_MAX_CORRECTION_MM", 5.0)),
             min=0.01,
             max=500.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_collision_response = FloatProperty(
+            name="Collision Response",
+            default=float(defaults.get("COLLISION_RESPONSE", 1.0)),
+            min=0.0,
+            max=1.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_collision_velocity_damping = FloatProperty(
+            name="Collision Velocity Damping",
+            default=float(defaults.get("COLLISION_VELOCITY_DAMPING", 1.0)),
+            min=0.0,
+            max=1.0,
             precision=3,
             options={"SKIP_SAVE"},
         )

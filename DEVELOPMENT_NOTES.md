@@ -99,6 +99,14 @@ active extension package.
 - `Iterations` can now be set up to `256`. Other tuning controls also have
   wider UI ranges so long-straight-hair stiffness, damping, collision push-out,
   and substep limits can be explored without code edits.
+- Collision repair now writes a GPU contact mask. Velocity derivation uses that
+  mask to apply `Collision Velocity Damping`, which defaults to `1.0`; contacted
+  points therefore keep zero velocity after penetration repair. This treats
+  collider correction as position-error repair, not as a spring-like impact that
+  stores rebound energy.
+- Added `Collision Response` for the position-correction fraction. The default
+  remains `1.0` so body/clothes penetration is fully repaired; lowering it is a
+  tuning option for softer but less strict collider response.
 
 ## 0.6.x archive
 
