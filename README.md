@@ -1,4 +1,4 @@
-# Yurameki 0.7.2
+# Yurameki 0.7.3
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -43,14 +43,17 @@ of calling Blender's per-point keyframe operator.
   evaluated pose.
 - `Gravity m/s2`: Warp-style acceleration vector.
 - `Damping`: velocity damping after prediction.
+- `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
 - `Particle Mass kg`: mass used for inverse mass of free joints.
-- `Iterations`: distance/bend constraint iterations.
+- `Iterations`: distance/bend constraint iterations. The UI allows up to `256`
+  for stiff, aligned long hair tests.
 - `Stretch Compliance`: XPBD-style compliance for adjacent joint lengths.
 - `Bend Compliance`: XPBD-style compliance for two-joint bend distances.
 - `Collision Margin mm`: target separation from collider mesh.
 - `Collision Search mm`: nearest-surface search radius. The default is wide
   enough for Body inside/outside repair, while each correction step is clamped
   to a small distance for stability.
+- `Collision Max Correction mm`: maximum collider push-out per collision pass.
 - `Collision Passes`: segment collision passes after point collision.
 - `Post Collision Iterations`: extra constraint/collision reconciliation passes.
 - `Auto Substep mm`: maximum constrained-joint motion per substep.

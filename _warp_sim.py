@@ -47,6 +47,8 @@ class WarpSimStats:
     total_hits: int
     n_triangles_last: int
     bake_mode: str
+    max_velocity_mps: float
+    collision_max_correction_mm: float
     device: str
     device_name: str
     device_arch: int
@@ -66,6 +68,7 @@ def _predict_kernel(
     gravity_x: float,
     gravity_y: float,
     gravity_z: float,
+    max_velocity: float,
 ):
     i = wp.tid()
     if inv_mass[i] <= 0.0:
@@ -75,6 +78,10 @@ def _predict_kernel(
         vel[i] = wp.vec3(0.0, 0.0, 0.0)
     else:
         v = vel[i] + wp.vec3(gravity_x, gravity_y, gravity_z) * dt
+        if max_velocity > 0.0:
+            speed = wp.length(v)
+            if speed > max_velocity and speed > 1.0e-9:
+                v = v / speed * max_velocity
         vel[i] = v
         predicted[i] = pos[i] + v * dt
 
@@ -165,12 +172,18 @@ def _derive_velocity_kernel(
     inv_mass: wp.array(dtype=float),
     dt: float,
     damping: float,
+    max_velocity: float,
 ):
     i = wp.tid()
     if inv_mass[i] <= 0.0:
         vel[i] = wp.vec3(0.0, 0.0, 0.0)
     else:
-        vel[i] = (predicted[i] - pos[i]) / dt * (1.0 - damping)
+        v = (predicted[i] - pos[i]) / dt * (1.0 - damping)
+        if max_velocity > 0.0:
+            speed = wp.length(v)
+            if speed > max_velocity and speed > 1.0e-9:
+                v = v / speed * max_velocity
+        vel[i] = v
 
 
 @wp.kernel
@@ -528,6 +541,7 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
 
     co = np.empty(len(frames) * 2, dtype=np.float32)
     co[0::2] = frame_numbers
+    interpolation = np.ones(len(frames), dtype=np.int32)
     for point_index in range(n_total):
         if point_index and point_index % 10000 == 0:
             print(f"Yurameki Bake keyframes point={point_index}/{n_total}")
@@ -543,6 +557,7 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
             fcurve.keyframe_points.add(len(frames))
             co[1::2] = local_values[:, point_index, axis]
             fcurve.keyframe_points.foreach_set("co", co)
+            fcurve.keyframe_points.foreach_set("interpolation", interpolation)
             fcurve.update()
 
     scene.frame_set(frames[-1])
@@ -666,8 +681,8 @@ class WarpJointSimulator:
                     )
 
     def _collide(self, meshes: ColliderMeshSet, margin: float, search_distance: float,
-                 allow_sweep: bool, segment_passes: int) -> None:
-        max_correction = max(float(margin) * 6.0, 2.0e-3)
+                 max_correction: float, allow_sweep: bool, segment_passes: int) -> None:
+        max_correction = max(float(max_correction), 1.0e-6)
         if meshes.body is not None:
             wp.launch(
                 _body_point_collision_kernel,
@@ -750,11 +765,13 @@ class WarpJointSimulator:
         dt_frame: float,
         gravity: tuple[float, float, float],
         damping: float,
+        max_velocity: float,
         iterations: int,
         stretch_compliance: float,
         bend_compliance: float,
         collision_margin: float,
         collision_search: float,
+        collision_max_correction: float,
         collision_passes: int,
         post_collision_iterations: int,
     ) -> tuple[np.ndarray, int, int]:
@@ -780,18 +797,29 @@ class WarpJointSimulator:
                     float(gravity[0]),
                     float(gravity[1]),
                     float(gravity[2]),
+                    float(max_velocity),
                 ],
                 device=self.device,
             )
             self._solve_constraints(dt, iterations, stretch_compliance, bend_compliance)
-            self._collide(meshes, collision_margin, collision_search, True, collision_passes)
+            self._collide(meshes, collision_margin, collision_search,
+                          collision_max_correction, True, collision_passes)
             for _ in range(max(0, int(post_collision_iterations))):
                 self._solve_constraints(dt, 1, stretch_compliance, bend_compliance)
-                self._collide(meshes, collision_margin, collision_search, False, collision_passes)
+                self._collide(meshes, collision_margin, collision_search,
+                              collision_max_correction, False, collision_passes)
             wp.launch(
                 _derive_velocity_kernel,
                 dim=self.n_total,
-                inputs=[self.pos, self.predicted, self.vel, self.inv_mass, dt, float(damping)],
+                inputs=[
+                    self.pos,
+                    self.predicted,
+                    self.vel,
+                    self.inv_mass,
+                    dt,
+                    float(damping),
+                    float(max_velocity),
+                ],
                 device=self.device,
             )
             wp.launch(_commit_kernel, dim=self.n_total, inputs=[self.pos, self.predicted], device=self.device)
@@ -833,12 +861,14 @@ def simulate(
     root_locked_points: int,
     gravity: tuple[float, float, float],
     damping: float,
+    max_velocity_mps: float,
     particle_mass: float,
     iterations: int,
     stretch_compliance: float,
     bend_compliance: float,
     collision_margin_m: float,
     collision_search_m: float,
+    collision_max_correction_m: float,
     collision_passes: int,
     post_collision_iterations: int,
     max_move_per_substep_m: float,
@@ -912,11 +942,13 @@ def simulate(
                 dt_frame,
                 gravity,
                 damping,
+                float(max_velocity_mps),
                 int(iterations),
                 float(stretch_compliance),
                 float(bend_compliance),
                 float(collision_margin_m),
                 float(collision_search_m),
+                float(collision_max_correction_m),
                 int(collision_passes),
                 int(post_collision_iterations),
             )
@@ -948,6 +980,8 @@ def simulate(
         total_hits=total_hits,
         n_triangles_last=last_triangles,
         bake_mode=bake_mode,
+        max_velocity_mps=float(max_velocity_mps),
+        collision_max_correction_mm=float(collision_max_correction_m) * 1000.0,
         device=simulator.device,
         device_name=simulator.device_name,
         device_arch=simulator.device_arch,

@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.2.
+Current version: 0.7.3.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,7 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.2`; no native DLL build is required.
+- Latest package target: source tree `0.7.3`; no native DLL build is required.
 
 ## 0.7.0 Warp rewrite
 
@@ -84,6 +84,21 @@ active extension package.
 - Keyframe baking now writes Curves `position` F-Curves through Blender 5.2's
   `Action.fcurve_ensure_for_datablock()` API in bulk. This avoids millions of
   per-point `keyframe_insert()` calls on large hair tests.
+
+## 0.7.3 velocity limit pass
+
+- Added `Max Velocity m/s`. Free joints are clamped both after gravity
+  prediction and after post-collision velocity derivation. `0` disables the
+  clamp.
+- Exposed the previously hard-coded collision push-out clamp as
+  `Collision Max Correction mm`. The default is `5 mm`, close to the old
+  `max(margin * 6, 2 mm)` behavior for the default `0.8 mm` margin.
+- Baked Curves position F-Curves now use `LINEAR` interpolation. The previous
+  default Blender `BEZIER` interpolation could add unintended between-frame
+  overshoot to a simulation cache.
+- `Iterations` can now be set up to `256`. Other tuning controls also have
+  wider UI ranges so long-straight-hair stiffness, damping, collision push-out,
+  and substep limits can be explored without code edits.
 
 ## 0.6.x archive
 

@@ -151,12 +151,14 @@ def _simulate(context):
             root_locked_points=int(wm.yurameki_root_locked_points),
             gravity=tuple(float(v) for v in wm.yurameki_gravity),
             damping=float(wm.yurameki_damping),
+            max_velocity_mps=float(wm.yurameki_max_velocity_mps),
             particle_mass=float(wm.yurameki_particle_mass_kg),
             iterations=int(wm.yurameki_iterations),
             stretch_compliance=float(wm.yurameki_stretch_compliance),
             bend_compliance=float(wm.yurameki_bend_compliance),
             collision_margin_m=float(wm.yurameki_collision_margin_mm) * 1.0e-3,
             collision_search_m=float(wm.yurameki_collision_search_mm) * 1.0e-3,
+            collision_max_correction_m=float(wm.yurameki_collision_max_correction_mm) * 1.0e-3,
             collision_passes=int(wm.yurameki_collision_passes),
             post_collision_iterations=int(wm.yurameki_post_collision_iterations),
             max_move_per_substep_m=float(wm.yurameki_auto_substep_mm) * 1.0e-3,
@@ -175,6 +177,8 @@ def _simulate(context):
         f"strands={stats.n_strands}, pps={stats.points_per_strand}, "
         f"locked={stats.root_locked_points}, "
         f"auto_move={stats.max_auto_move_mm:.3f}mm, "
+        f"vmax={stats.max_velocity_mps:.2f}m/s, "
+        f"corr<={stats.collision_max_correction_mm:.2f}mm, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
         f"{stats.device} sm_{stats.device_arch}, "
         f"bake={stats.bake_mode.lower()}, time={stats.elapsed_sec:.2f}s",
@@ -274,12 +278,14 @@ _PROP_NAMES = (
     "yurameki_root_locked_points",
     "yurameki_gravity",
     "yurameki_damping",
+    "yurameki_max_velocity_mps",
     "yurameki_particle_mass_kg",
     "yurameki_iterations",
     "yurameki_stretch_compliance",
     "yurameki_bend_compliance",
     "yurameki_collision_margin_mm",
     "yurameki_collision_search_mm",
+    "yurameki_collision_max_correction_mm",
     "yurameki_collision_passes",
     "yurameki_post_collision_iterations",
     "yurameki_auto_substep_mm",
@@ -355,7 +361,7 @@ def register():
             name="Root Locked Points",
             default=int(defaults.get("ROOT_LOCKED_POINTS", 3)),
             min=1,
-            max=32,
+            max=128,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_gravity = FloatVectorProperty(
@@ -363,8 +369,8 @@ def register():
             default=tuple(defaults.get("GRAVITY", (0.0, 0.0, -9.81))),
             size=3,
             subtype="XYZ",
-            min=-100.0,
-            max=100.0,
+            min=-1000.0,
+            max=1000.0,
             step=10,
             precision=3,
             options={"SKIP_SAVE"},
@@ -374,6 +380,14 @@ def register():
             default=float(defaults.get("DAMPING", 0.08)),
             min=0.0,
             max=0.99,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_max_velocity_mps = FloatProperty(
+            name="Max Velocity m/s",
+            default=float(defaults.get("MAX_VELOCITY_MPS", 1.0)),
+            min=0.0,
+            max=100.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
@@ -389,7 +403,7 @@ def register():
             name="Iterations",
             default=int(defaults.get("ITERATIONS", 8)),
             min=1,
-            max=64,
+            max=256,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_stretch_compliance = FloatProperty(
@@ -412,7 +426,7 @@ def register():
             name="Collision Margin mm",
             default=float(defaults.get("COLLISION_MARGIN_MM", 0.8)),
             min=0.01,
-            max=20.0,
+            max=100.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
@@ -420,7 +434,15 @@ def register():
             name="Collision Search mm",
             default=float(defaults.get("COLLISION_SEARCH_MM", 20.0)),
             min=0.1,
-            max=100.0,
+            max=1000.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_collision_max_correction_mm = FloatProperty(
+            name="Collision Max Correction mm",
+            default=float(defaults.get("COLLISION_MAX_CORRECTION_MM", 5.0)),
+            min=0.01,
+            max=500.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
@@ -428,21 +450,21 @@ def register():
             name="Collision Passes",
             default=int(defaults.get("COLLISION_PASSES", 1)),
             min=1,
-            max=8,
+            max=32,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_post_collision_iterations = IntProperty(
             name="Post Collision Iterations",
             default=int(defaults.get("POST_COLLISION_ITERATIONS", 2)),
             min=0,
-            max=16,
+            max=64,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_auto_substep_mm = FloatProperty(
             name="Auto Substep mm",
             default=float(defaults.get("AUTO_SUBSTEP_MM", 1.0)),
             min=0.05,
-            max=20.0,
+            max=100.0,
             precision=3,
             options={"SKIP_SAVE"},
         )
@@ -450,7 +472,7 @@ def register():
             name="Max Substeps",
             default=int(defaults.get("MAX_SUBSTEPS", 16)),
             min=1,
-            max=128,
+            max=512,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_sim_bake_mode = EnumProperty(
