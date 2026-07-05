@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.6.7"
+version = "0.7.2"
 name = "Yurameki"
-tagline = "Yurameki (揺らめき) — CUDA hair solver prototype"
+tagline = "Yurameki (揺らめき) — NVIDIA Warp long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
 type = "add-on"
 
@@ -19,17 +19,10 @@ platforms = ["windows-x64"]
 paths = [
     "__init__.py",
     "ui.py",
-    "solver_interface.py",
-    "gravity_sim.py",
-    "cuda_collider.py",
+    "_warp_sim.py",
     "collider_proxy.py",
     "yurameki_defaults.json",
     "README.md",
     "DEVELOPMENT_NOTES.md",
     "LICENSE",
-    "native/CMakeLists.txt",
-    "native/build.ps1",
-    "native/yurameki_cuda_collide.cu",
-    "native/yurameki_cuda_collide.h",
-    "native/yurameki_cuda_collide.dll",
 ]

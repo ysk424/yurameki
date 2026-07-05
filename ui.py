@@ -1,4 +1,4 @@
-"""Yurameki CUDA straight long-hair N-panel."""
+"""Yurameki NVIDIA Warp N-panel."""
 
 from __future__ import annotations
 
@@ -51,37 +51,33 @@ class YURAMEKI_PT_main(Panel):
             col.label(text=status)
 
         box = layout.box()
-        box.label(text="Solver Step")
-        col = box.column(align=True)
-        col.prop(wm, "yurameki_cylinder_length_cm")
-        col.prop(wm, "yurameki_solver_sort_axis")
-        col.prop(wm, "yurameki_solver_step_index")
-        col.prop(wm, "yurameki_gravity_step_mm")
-        col.prop(wm, "yurameki_gravity_blend_steps")
-        col.prop(wm, "yurameki_collider_radius_mm")
-        col.prop(wm, "yurameki_collider_substeps")
-        col.prop(wm, "yurameki_collider_max_move_mm")
-        row = col.row(align=True)
-        row.operator("yurameki.apply_solver_step", icon="PLAY")
-        row.operator("yurameki.reset_solver_state", icon="LOOP_BACK")
-
-        box = layout.box()
         box.label(text="Simulate")
         col = box.column(align=True)
         col.prop(wm, "yurameki_sim_start_frame")
         col.prop(wm, "yurameki_sim_end_frame")
-        col.prop(wm, "yurameki_cylinder_length_cm")
-        col.prop(wm, "yurameki_sim_interpolation_steps")
-        col.prop(wm, "yurameki_sim_propagation_cm")
-        col.prop(wm, "yurameki_sim_memory_height_m")
-        col.prop(wm, "yurameki_sim_memory_strength")
         col.prop(wm, "yurameki_sim_bake_mode")
-        col.operator("yurameki.simulate_gravity", icon="RENDER_ANIMATION")
+        col.operator("yurameki.simulate", icon="RENDER_ANIMATION")
 
         box = layout.box()
-        box.label(text="Debug")
+        box.label(text="Warp")
         col = box.column(align=True)
-        col.operator("yurameki.detect_cuda_collider", icon="MOD_PHYSICS")
+        col.prop(wm, "yurameki_root_locked_points")
+        col.prop(wm, "yurameki_gravity")
+        col.prop(wm, "yurameki_damping")
+        col.prop(wm, "yurameki_particle_mass_kg")
+        col.prop(wm, "yurameki_iterations")
+        col.prop(wm, "yurameki_stretch_compliance")
+        col.prop(wm, "yurameki_bend_compliance")
+
+        box = layout.box()
+        box.label(text="Collision")
+        col = box.column(align=True)
+        col.prop(wm, "yurameki_collision_margin_mm")
+        col.prop(wm, "yurameki_collision_search_mm")
+        col.prop(wm, "yurameki_collision_passes")
+        col.prop(wm, "yurameki_post_collision_iterations")
+        col.prop(wm, "yurameki_auto_substep_mm")
+        col.prop(wm, "yurameki_max_substeps")
 
 
 _classes = (YURAMEKI_PT_main,)

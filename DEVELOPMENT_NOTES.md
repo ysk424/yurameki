@@ -1,37 +1,93 @@
-# Yurameki CUDA Prototype Notes
+# Yurameki Warp Prototype Notes
 
 Status: active development fork.
 
-Current version: 0.6.7.
+Current version: 0.7.2.
 
 Branch: custom-cpp-cuda.
 
-Hard rule: do not restore the previous solver path.  The prototype uses native
-CUDA with CUB/CCCL.  PyTorch is reserved for future matrix/tensor work only if
-it becomes useful.
+Current direction: use NVIDIA Warp through its Python kernel, array, and Mesh
+query APIs. The native C++ CUDA cylinder-chain path is no longer part of the
+active extension package.
 
 ## Current State
 
-- Previous solver files were removed from this fork.
-- Blender Curves hair is read and split into fixed 1 cm cylinders.
-- A deterministic solve order array is generated from root/cylinder position.
-- `Apply FK Root Pull` verifies the 1 cm cylinder FK chain.
-- CUDA collider detection is implemented in `native/yurameki_cuda_collide.cu`.
-- `Apply CUDA Avoidance` runs CUDA collider avoidance with substeps and a capped
-  movement per substep.
-- Latest package: source tree `0.6.7`; build the native DLL before packaging.
-- `Check` now creates a copied collider proxy and fills all boundary holes on
-  the proxy mesh. Collider operations prefer this proxy when it exists, giving
-  parity checks a closed collision target without changing the groom solver
-  heuristics.
-- `Simulate` is now the 0.6 fixed-chain frame-range path. It subdivides source
-  strands internally, keeps cylinder 0 in its current direction, propagates the
-  cylinder-0 tip movement linearly toward zero at the configured chain distance,
-  applies parametric gravity, resolves collider avoidance on CUDA, buffers
-  simulated frames in memory, and bakes Curves position keyframes after compute.
-- CUDA collider exact distance checks are now guarded by capsule/triangle AABB
-  overlap tests. This is the first broadphase step; no hair-hair collision is
-  present in 0.6.0.
+- Yurameki expects hair already planted and settled by Tokoya.
+- The panel exposes only `Check` and `Simulate` command buttons.
+- `Check` validates Hair/Body/Clothes, builds or reuses the filled Body proxy,
+  and verifies Warp CUDA plus Warp Mesh initialization.
+- `Simulate` uses the existing Blender Curves joints and original adjacent
+  segment lengths. No 1 cm cylinder resampling is performed.
+- The first `Root Locked Points` joints of each strand are kinematic and follow
+  the evaluated Curves pose. Default is `3`.
+- Free joints are integrated with Warp kernels using gravity, damping, distance
+  constraints, bend constraints, point sweep collision, nearest-surface
+  push-out, and segment ray collision.
+- Automatic substeps are based on constrained-point motion plus estimated
+  gravity/velocity motion of free joints. `Auto Substep mm` sets the target
+  movement per substep and `Max Substeps` caps the result.
+- Body collision uses the filled Body proxy. Clothes are evaluated directly each
+  frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
+- Latest package target: source tree `0.7.2`; no native DLL build is required.
+
+## 0.7.0 Warp rewrite
+
+- Replaced the active simulation path with `_warp_sim.py`.
+- Replaced the parameter list with Warp-style controls: gravity, mass, damping,
+  stretch compliance, bend compliance, collision margin/search/passes, and
+  automatic substep limits.
+- Removed active UI access to solver-step debugging, CUDA detection, cylinder
+  length, propagation distance, and upper-shape memory. Those were tied to the
+  discarded cylinder-chain path.
+- The old native CUDA and cylinder files remain in repository history and may
+  still exist in the working tree, but they are not included in the 0.7.0
+  extension manifest.
+
+## 0.7.0 explosion-stability pass
+
+- Hair-hair collision is not active in the Warp prototype. Explosion observed
+  after the first frame was not caused by self collision.
+- Body and Clothes collision are now split into separate Warp meshes. Body uses
+  signed nearest-surface repair suitable for the filled proxy; Clothes use
+  two-sided unsigned repair for open Alembic / Mesh Sequence Cache surfaces.
+- Nearest-surface push-out no longer trusts a raw face normal for every
+  collider. Clothes orient the normal toward the hair point, and Body uses
+  Warp's signed-normal query.
+- Segment ray collision no longer teleports an endpoint all the way to the hit
+  plane when the correction is large. Each correction pass is clamped to a few
+  millimeters.
+- Velocity is derived after constraint and collision reconciliation, not before
+  collision. This prevents stale pre-collision velocity from feeding the next
+  substep.
+- Automatic substeps now include estimated free-joint motion from gravity and
+  existing velocity, not only kinematic root/locked-point motion. This matters
+  when the body barely moves but long hair is falling under gravity.
+
+## 0.7.1 CUDA/frame visibility pass
+
+- Warp initialization now explicitly selects `cuda:0` and rejects non-CUDA
+  devices before allocating simulation arrays.
+- Simulate now leaves the scene on the requested end frame after a successful
+  run. The previous code always restored the original frame, which made a
+  multi-frame run look as if it had stopped at frame 1.
+- Operator reports now include frame transition count, total substep count, and
+  the CUDA device / SM architecture. Console output also prints one progress
+  line per simulated frame transition.
+
+## 0.7.2 bake default
+
+- `Bake: Keyframes` is now the default. The previous default, `Final Only`,
+  wrote the last simulated frame directly to the Curves datablock, so frame 1
+  and frame 24 both displayed the frame-24 shape after simulation.
+- The static mode remains available as `Final Preview` for quick last-frame
+  inspection, but it is intentionally not an animation bake.
+- Keyframe baking now writes Curves `position` F-Curves through Blender 5.2's
+  `Action.fcurve_ensure_for_datablock()` API in bulk. This avoids millions of
+  per-point `keyframe_insert()` calls on large hair tests.
+
+## 0.6.x archive
+
+- The 0.6.0 path used native CUDA with fixed-length cylinder chains.
 - The 0.6.1 package fixes Blender 5.x Curves position baking by keyframing
   `attributes["position"].data[i].vector` from the Curves datablock instead of
   calling `keyframe_insert("vector")` on the attribute value itself.
