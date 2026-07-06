@@ -1,4 +1,4 @@
-# Yurameki 0.7.3
+# Yurameki 0.7.5
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -26,16 +26,20 @@ The panel has two command buttons:
 - `Check`: validates Hair, Body, optional Clothes, builds/reuses the Body proxy,
   and verifies Warp CUDA / Mesh initialization.
 - `Simulate`: runs the Warp joint-chain simulation for the frame range and
-  bakes every simulated frame by default. On success, Blender is left on the end
-  frame so the simulated result is visible.
+  stores every simulated frame in the Yurameki runtime cache by default. On
+  success, Blender is left on the end frame so the simulated result is visible.
+- `Bake Cache`: converts the current Yurameki runtime cache to Curves position
+  keyframes when you are ready to commit the result.
 
 Hair, Body, and Clothes are selected by eyedropper fields.
 
-`Bake: Keyframes` is the default. `Final Preview` is only for a static look at
-the last simulated frame; it overwrites the Curves data, so every timeline frame
-will show that final shape.
-Keyframe baking writes the Curves `position` F-Curves directly in bulk instead
-of calling Blender's per-point keyframe operator.
+`Output: Cache` is the default. It keeps simulation playback in a cache instead
+of immediately creating millions of Curves `position` F-Curves. `Keyframes`
+keeps the direct F-Curve bake path for final Blender-native animation output.
+`Final Preview` is only for a static look at the last simulated frame; it
+overwrites the Curves data, so every timeline frame will show that final shape.
+When you do bake keyframes, Yurameki writes the Curves `position` F-Curves
+directly in bulk instead of calling Blender's per-point keyframe operator.
 
 ## Parameters
 
@@ -44,11 +48,13 @@ of calling Blender's per-point keyframe operator.
 - `Gravity m/s2`: Warp-style acceleration vector.
 - `Damping`: velocity damping after prediction.
 - `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
-- `Particle Mass kg`: mass used for inverse mass of free joints.
+- `Particle Mass g`: mass used for inverse mass of free joints.
 - `Iterations`: distance/bend constraint iterations. The UI allows up to `256`
   for stiff, aligned long hair tests.
-- `Stretch Compliance`: XPBD-style compliance for adjacent joint lengths.
-- `Bend Compliance`: XPBD-style compliance for two-joint bend distances.
+- `Stretch Compliance log10`: base-10 exponent for XPBD-style compliance of
+  adjacent joint lengths. `-8` means `1e-8`.
+- `Bend Compliance log10`: base-10 exponent for XPBD-style compliance of
+  two-joint bend distances. `-5` means `1e-5`.
 - `Collision Margin mm`: target separation from collider mesh.
 - `Collision Search mm`: nearest-surface search radius. The default is wide
   enough for Body inside/outside repair, while each correction step is clamped

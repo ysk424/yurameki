@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import math
 
 import bpy
 from bpy.props import (
@@ -23,6 +25,21 @@ def _load_defaults():
     path = os.path.join(os.path.dirname(__file__), "yurameki_defaults.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _default_particle_mass_g(defaults):
+    if "PARTICLE_MASS_G" in defaults:
+        return float(defaults.get("PARTICLE_MASS_G", 1.0))
+    return float(defaults.get("PARTICLE_MASS_KG", 0.001)) * 1000.0
+
+
+def _default_log10(defaults, key: str, fallback: float) -> float:
+    value = max(float(defaults.get(key, fallback)), 1.0e-12)
+    return math.log10(value)
+
+
+def _value_from_log10(value) -> float:
+    return 10.0 ** float(value)
 
 
 def _find_curves_obj(context=None):
@@ -109,7 +126,7 @@ def _check_hair(context):
             obj,
             colliders,
             root_locked_points=int(context.window_manager.yurameki_root_locked_points),
-            particle_mass=float(context.window_manager.yurameki_particle_mass_kg),
+            particle_mass=float(context.window_manager.yurameki_particle_mass_g) * 1.0e-3,
         )
     except ImportError as exc:
         return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
@@ -152,10 +169,10 @@ def _simulate(context):
             gravity=tuple(float(v) for v in wm.yurameki_gravity),
             damping=float(wm.yurameki_damping),
             max_velocity_mps=float(wm.yurameki_max_velocity_mps),
-            particle_mass=float(wm.yurameki_particle_mass_kg),
+            particle_mass=float(wm.yurameki_particle_mass_g) * 1.0e-3,
             iterations=int(wm.yurameki_iterations),
-            stretch_compliance=float(wm.yurameki_stretch_compliance),
-            bend_compliance=float(wm.yurameki_bend_compliance),
+            stretch_compliance=_value_from_log10(wm.yurameki_stretch_compliance_log10),
+            bend_compliance=_value_from_log10(wm.yurameki_bend_compliance_log10),
             collision_margin_m=float(wm.yurameki_collision_margin_mm) * 1.0e-3,
             collision_search_m=float(wm.yurameki_collision_search_mm) * 1.0e-3,
             collision_max_correction_m=float(wm.yurameki_collision_max_correction_mm) * 1.0e-3,
@@ -171,6 +188,7 @@ def _simulate(context):
         return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
     except Exception as exc:
         return False, f"Simulation failed: {exc!r}"
+    cache_text = f", cache={stats.cache_path}" if stats.cache_path else ""
     return (
         True,
         f"Simulate: frames={stats.start_frame}-{stats.end_frame}, "
@@ -185,7 +203,27 @@ def _simulate(context):
         f"contact_damp={stats.collision_velocity_damping:.2f}, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
         f"{stats.device} sm_{stats.device_arch}, "
-        f"bake={stats.bake_mode.lower()}, time={stats.elapsed_sec:.2f}s",
+        f"bake={stats.bake_mode.lower()}{cache_text}, time={stats.elapsed_sec:.2f}s",
+    )
+
+
+def _bake_cache(context):
+    obj = _find_curves_obj(context)
+    if obj is None:
+        return False, "Pick one Hair Curves object"
+    try:
+        from . import _warp_sim
+
+        stats = _warp_sim.bake_runtime_cache(obj)
+    except ImportError as exc:
+        return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
+    except Exception as exc:
+        return False, f"Bake cache failed: {exc!r}"
+    return (
+        True,
+        f"Bake Cache: frames={stats['start_frame']}-{stats['end_frame']}, "
+        f"points={stats['n_points']}, fcurves={stats['fcurves']}, "
+        f"keys={stats['keys']}",
     )
 
 
@@ -261,12 +299,24 @@ class YURAMEKI_OT_simulate(Operator):
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
+class YURAMEKI_OT_bake_cache(Operator):
+    bl_idname = "yurameki.bake_cache"
+    bl_label = "Bake Cache"
+    bl_description = "Convert the current Yurameki simulation cache to Curves position keyframes"
+
+    def execute(self, context):
+        ok, message = _bake_cache(context)
+        self.report({"INFO"} if ok else {"ERROR"}, message)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
+
 _classes = (
     YURAMEKI_OT_check_hair,
     YURAMEKI_OT_pick_curves,
     YURAMEKI_OT_pick_collider,
     YURAMEKI_OT_pick_clothes,
     YURAMEKI_OT_simulate,
+    YURAMEKI_OT_bake_cache,
 )
 
 
@@ -283,10 +333,10 @@ _PROP_NAMES = (
     "yurameki_gravity",
     "yurameki_damping",
     "yurameki_max_velocity_mps",
-    "yurameki_particle_mass_kg",
+    "yurameki_particle_mass_g",
     "yurameki_iterations",
-    "yurameki_stretch_compliance",
-    "yurameki_bend_compliance",
+    "yurameki_stretch_compliance_log10",
+    "yurameki_bend_compliance_log10",
     "yurameki_collision_margin_mm",
     "yurameki_collision_search_mm",
     "yurameki_collision_max_correction_mm",
@@ -397,12 +447,12 @@ def register():
             precision=3,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_particle_mass_kg = FloatProperty(
-            name="Particle Mass kg",
-            default=float(defaults.get("PARTICLE_MASS_KG", 0.001)),
-            min=1.0e-6,
-            max=1.0,
-            precision=6,
+        WindowManager.yurameki_particle_mass_g = FloatProperty(
+            name="Particle Mass g",
+            default=_default_particle_mass_g(defaults),
+            min=0.001,
+            max=1000.0,
+            precision=3,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_iterations = IntProperty(
@@ -412,20 +462,20 @@ def register():
             max=256,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_stretch_compliance = FloatProperty(
-            name="Stretch Compliance",
-            default=float(defaults.get("STRETCH_COMPLIANCE", 1.0e-8)),
-            min=0.0,
-            max=1.0,
-            precision=8,
+        WindowManager.yurameki_stretch_compliance_log10 = FloatProperty(
+            name="Stretch Compliance log10",
+            default=_default_log10(defaults, "STRETCH_COMPLIANCE", 1.0e-8),
+            min=-12.0,
+            max=0.0,
+            precision=2,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_bend_compliance = FloatProperty(
-            name="Bend Compliance",
-            default=float(defaults.get("BEND_COMPLIANCE", 1.0e-5)),
-            min=0.0,
-            max=1.0,
-            precision=8,
+        WindowManager.yurameki_bend_compliance_log10 = FloatProperty(
+            name="Bend Compliance log10",
+            default=_default_log10(defaults, "BEND_COMPLIANCE", 1.0e-5),
+            min=-12.0,
+            max=0.0,
+            precision=2,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_collision_margin_mm = FloatProperty(
@@ -498,12 +548,13 @@ def register():
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_sim_bake_mode = EnumProperty(
-            name="Bake",
+            name="Output",
             items=(
+                ("CACHE", "Cache", "Store simulated frames in the Yurameki runtime cache for preview playback"),
                 ("KEYFRAMES", "Keyframes", "Bake every simulated frame as Curves position keyframes"),
                 ("FINAL", "Final Preview", "Write only the final simulated frame as a static preview"),
             ),
-            default=str(defaults.get("SIM_BAKE_MODE", "KEYFRAMES")),
+            default=str(defaults.get("SIM_BAKE_MODE", "CACHE")),
             options={"SKIP_SAVE"},
         )
 
@@ -525,6 +576,12 @@ def register():
 
 
 def unregister():
+    mod = sys.modules.get(__name__ + "._warp_sim")
+    if mod is not None:
+        try:
+            mod.unregister_cache_handler()
+        except Exception:
+            pass
     ui.unregister()
     _clear_props()
     for cls in reversed(_classes):

@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.3.
+Current version: 0.7.5.
 
 Branch: custom-cpp-cuda.
 
@@ -13,7 +13,7 @@ active extension package.
 ## Current State
 
 - Yurameki expects hair already planted and settled by Tokoya.
-- The panel exposes only `Check` and `Simulate` command buttons.
+- The panel exposes `Check`, `Simulate`, and `Bake Cache` command buttons.
 - `Check` validates Hair/Body/Clothes, builds or reuses the filled Body proxy,
   and verifies Warp CUDA plus Warp Mesh initialization.
 - `Simulate` uses the existing Blender Curves joints and original adjacent
@@ -28,7 +28,23 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.3`; no native DLL build is required.
+- Latest package target: source tree `0.7.5`; no native DLL build is required.
+
+## 0.7.5 UI unit cleanup
+
+- `Particle Mass` is now entered in grams in the UI and converted back to kg
+  before being passed to the Warp solver.
+- `Stretch Compliance` and `Bend Compliance` are now entered as base-10
+  exponents. For example, `-8` passes `1e-8` to the solver.
+
+## 0.7.4 runtime cache output
+
+- `Output: Cache` is now the default simulation output mode.
+- `Simulate` stores per-frame Curves positions in a Yurameki runtime cache and
+  replays them on frame changes instead of immediately creating Curves position
+  F-Curves.
+- `Bake Cache` converts the current runtime cache to Curves position F-Curves
+  only when the result needs to be committed as Blender-native keyframes.
 
 ## 0.7.0 Warp rewrite
 

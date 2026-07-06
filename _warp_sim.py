@@ -9,9 +9,12 @@ simulated with distance, bend, gravity, damping, and Warp Mesh collision.
 from __future__ import annotations
 
 import math
+import os
+import tempfile
 import time
 from dataclasses import dataclass
 
+from bpy.app.handlers import persistent
 import bpy
 import numpy as np
 import warp as wp
@@ -51,10 +54,36 @@ class WarpSimStats:
     collision_max_correction_mm: float
     collision_response: float
     collision_velocity_damping: float
+    cache_path: str
     device: str
     device_name: str
     device_arch: int
     elapsed_sec: float
+
+
+@dataclass
+class YuramekiRuntimeCache:
+    object_name: str
+    data_name: str
+    frames: np.ndarray
+    local_values: np.ndarray
+    path: str
+
+    @property
+    def start_frame(self) -> int:
+        return int(self.frames[0])
+
+    @property
+    def end_frame(self) -> int:
+        return int(self.frames[-1])
+
+    @property
+    def n_points(self) -> int:
+        return int(self.local_values.shape[1])
+
+
+_CACHE_REGISTRY: dict[str, YuramekiRuntimeCache] = {}
+_CACHE_MUTED = False
 
 
 @wp.kernel
@@ -544,6 +573,13 @@ def _target_motion_mm(prev_targets: np.ndarray, next_targets: np.ndarray,
 def _bake_position_keyframes(curves_obj, frames: list[int],
                              baked: dict[int, np.ndarray],
                              offsets: dict[int, np.ndarray]) -> None:
+    local_values = _local_values_from_world(curves_obj, frames, baked, offsets)
+    _bake_local_position_keyframes(curves_obj, frames, local_values)
+
+
+def _local_values_from_world(curves_obj, frames: list[int],
+                             baked: dict[int, np.ndarray],
+                             offsets: dict[int, np.ndarray]) -> np.ndarray:
     attr = curves_obj.data.attributes.get("position")
     if attr is None:
         raise ValueError("Curves has no position attribute")
@@ -552,7 +588,6 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
         raise ValueError("Curves has no points")
 
     scene = bpy.context.scene
-    frame_numbers = np.asarray(frames, dtype=np.float32)
     local_values = np.empty((len(frames), n_total, 3), dtype=np.float32)
     for frame_index, frame in enumerate(frames):
         scene.frame_set(frame)
@@ -561,13 +596,30 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
             baked[frame],
             offset=offsets[frame],
         )
+    return local_values
 
+
+def _bake_local_position_keyframes(curves_obj, frames: list[int],
+                                   local_values: np.ndarray) -> None:
+    attr = curves_obj.data.attributes.get("position")
+    if attr is None:
+        raise ValueError("Curves has no position attribute")
+    n_total = len(attr.data)
+    if n_total == 0:
+        raise ValueError("Curves has no points")
+    if local_values.shape != (len(frames), n_total, 3):
+        raise ValueError(
+            "Cached position shape mismatch: "
+            f"{local_values.shape} != {(len(frames), n_total, 3)}"
+        )
     data = curves_obj.data
     anim = data.animation_data_create()
     if anim.action is None:
         anim.action = bpy.data.actions.new(f"Yurameki Bake {curves_obj.name}")
     action = anim.action
 
+    scene = bpy.context.scene
+    frame_numbers = np.asarray(frames, dtype=np.float32)
     co = np.empty(len(frames) * 2, dtype=np.float32)
     co[0::2] = frame_numbers
     interpolation = np.ones(len(frames), dtype=np.int32)
@@ -591,6 +643,156 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
 
     scene.frame_set(frames[-1])
     bpy.context.view_layer.update()
+
+
+def _cache_dir() -> str:
+    blend_path = bpy.data.filepath
+    if blend_path:
+        path = bpy.path.abspath("//yurameki_cache")
+    else:
+        path = os.path.join(tempfile.gettempdir(), "yurameki_cache")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _cache_file_path(curves_obj, start_frame: int, end_frame: int) -> str:
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in curves_obj.name)
+    return os.path.join(_cache_dir(), f"{safe_name}_{start_frame}_{end_frame}.npz")
+
+
+def _write_local_points(curves_obj, local_pts: np.ndarray) -> None:
+    attr = curves_obj.data.attributes.get("position")
+    if attr is None or len(attr.data) != len(local_pts):
+        raise ValueError("Curves position attribute shape changed")
+    attr.data.foreach_set("vector", np.ascontiguousarray(local_pts, dtype=np.float32).ravel())
+    curves_obj.data.update_tag()
+
+
+def _apply_cache_frame(cache: YuramekiRuntimeCache, frame: int) -> bool:
+    matches = np.nonzero(cache.frames == int(frame))[0]
+    if len(matches) == 0:
+        return False
+    obj = bpy.data.objects.get(cache.object_name)
+    if obj is None or obj.type != "CURVES" or obj.data.name != cache.data_name:
+        return False
+    _write_local_points(obj, cache.local_values[int(matches[0])])
+    return True
+
+
+def _register_sim_cache(curves_obj, frames: list[int],
+                        baked: dict[int, np.ndarray],
+                        offsets: dict[int, np.ndarray]) -> YuramekiRuntimeCache:
+    local_values = _local_values_from_world(curves_obj, frames, baked, offsets)
+    frame_array = np.asarray(frames, dtype=np.int32)
+    path = _cache_file_path(curves_obj, int(frame_array[0]), int(frame_array[-1]))
+    np.savez(
+        path,
+        frames=frame_array,
+        local_values=np.ascontiguousarray(local_values, dtype=np.float32),
+        object_name=np.array([curves_obj.name]),
+        data_name=np.array([curves_obj.data.name]),
+    )
+    cache = YuramekiRuntimeCache(
+        object_name=curves_obj.name,
+        data_name=curves_obj.data.name,
+        frames=frame_array,
+        local_values=np.ascontiguousarray(local_values, dtype=np.float32),
+        path=os.path.abspath(path),
+    )
+    _CACHE_REGISTRY[curves_obj.name] = cache
+    curves_obj.data["yurameki_cache_path"] = cache.path
+    curves_obj.data["yurameki_cache_start"] = cache.start_frame
+    curves_obj.data["yurameki_cache_end"] = cache.end_frame
+    register_cache_handler()
+    _apply_cache_frame(cache, int(bpy.context.scene.frame_current))
+    return cache
+
+
+def clear_runtime_cache(curves_obj) -> None:
+    if curves_obj is None:
+        return
+    _CACHE_REGISTRY.pop(curves_obj.name, None)
+    for key in ("yurameki_cache_path", "yurameki_cache_start", "yurameki_cache_end"):
+        try:
+            del curves_obj.data[key]
+        except Exception:
+            pass
+    if not _CACHE_REGISTRY:
+        unregister_cache_handler()
+
+
+def get_runtime_cache(curves_obj) -> YuramekiRuntimeCache | None:
+    if curves_obj is None:
+        return None
+    cache = _CACHE_REGISTRY.get(curves_obj.name)
+    if cache is not None and cache.data_name == curves_obj.data.name:
+        return cache
+    path = str(curves_obj.data.get("yurameki_cache_path", "")).strip()
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            frames = np.ascontiguousarray(data["frames"], dtype=np.int32)
+            local_values = np.ascontiguousarray(data["local_values"], dtype=np.float32)
+    except Exception:
+        return None
+    if local_values.ndim != 3 or local_values.shape[2] != 3:
+        return None
+    attr = curves_obj.data.attributes.get("position")
+    if attr is None or local_values.shape[1] != len(attr.data):
+        return None
+    cache = YuramekiRuntimeCache(
+        object_name=curves_obj.name,
+        data_name=curves_obj.data.name,
+        frames=frames,
+        local_values=local_values,
+        path=os.path.abspath(path),
+    )
+    _CACHE_REGISTRY[curves_obj.name] = cache
+    register_cache_handler()
+    return cache
+
+
+def bake_runtime_cache(curves_obj) -> dict:
+    cache = get_runtime_cache(curves_obj)
+    if cache is None:
+        raise ValueError("No Yurameki runtime cache for this Curves object")
+    _bake_local_position_keyframes(
+        curves_obj,
+        [int(frame) for frame in cache.frames.tolist()],
+        cache.local_values,
+    )
+    return {
+        "object": cache.object_name,
+        "start_frame": cache.start_frame,
+        "end_frame": cache.end_frame,
+        "n_frames": int(len(cache.frames)),
+        "n_points": cache.n_points,
+        "fcurves": cache.n_points * 3,
+        "keys": cache.n_points * 3 * int(len(cache.frames)),
+        "path": cache.path,
+    }
+
+
+@persistent
+def _yurameki_cache_frame_change(_scene):
+    if _CACHE_MUTED:
+        return
+    frame = int(bpy.context.scene.frame_current)
+    for cache in tuple(_CACHE_REGISTRY.values()):
+        _apply_cache_frame(cache, frame)
+
+
+def register_cache_handler() -> None:
+    handlers = bpy.app.handlers.frame_change_post
+    if _yurameki_cache_frame_change not in handlers:
+        handlers.append(_yurameki_cache_frame_change)
+
+
+def unregister_cache_handler() -> None:
+    handlers = bpy.app.handlers.frame_change_post
+    if _yurameki_cache_frame_change in handlers:
+        handlers.remove(_yurameki_cache_frame_change)
 
 
 class WarpJointSimulator:
@@ -938,8 +1140,8 @@ def simulate(
     if end_frame < start_frame:
         raise ValueError("End Frame must be >= Start Frame")
     bake_mode = str(bake_mode).strip().upper()
-    if bake_mode not in {"FINAL", "KEYFRAMES"}:
-        bake_mode = "KEYFRAMES"
+    if bake_mode not in {"CACHE", "FINAL", "KEYFRAMES"}:
+        bake_mode = "CACHE"
 
     scene = bpy.context.scene
     original_frame = int(scene.frame_current)
@@ -952,8 +1154,13 @@ def simulate(
     total_hits = 0
     last_triangles = 0
     success = False
+    cache_path = ""
+    global _CACHE_MUTED
+    previous_cache_muted = _CACHE_MUTED
+    _CACHE_MUTED = True
 
     try:
+        clear_runtime_cache(curves_obj)
         scene.frame_set(start_frame)
         pps, n_strands = _uniform_points_per_strand(curves_obj)
         locked = max(1, min(int(root_locked_points), pps))
@@ -1014,11 +1221,15 @@ def simulate(
 
         if bake_mode == "KEYFRAMES":
             _bake_position_keyframes(curves_obj, frames, baked, offsets)
+        elif bake_mode == "CACHE":
+            cache = _register_sim_cache(curves_obj, frames, baked, offsets)
+            cache_path = cache.path
         else:
             scene.frame_set(end_frame)
             _write_world_points(curves_obj, baked[end_frame], offset=offsets[end_frame])
         success = True
     finally:
+        _CACHE_MUTED = previous_cache_muted
         if not success:
             scene.frame_set(original_frame)
 
@@ -1040,6 +1251,7 @@ def simulate(
         collision_max_correction_mm=float(collision_max_correction_m) * 1000.0,
         collision_response=min(max(float(collision_response), 0.0), 1.0),
         collision_velocity_damping=min(max(float(collision_velocity_damping), 0.0), 1.0),
+        cache_path=cache_path,
         device=simulator.device,
         device_name=simulator.device_name,
         device_arch=simulator.device_arch,

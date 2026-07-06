@@ -57,6 +57,7 @@ class YURAMEKI_PT_main(Panel):
         col.prop(wm, "yurameki_sim_end_frame")
         col.prop(wm, "yurameki_sim_bake_mode")
         col.operator("yurameki.simulate", icon="RENDER_ANIMATION")
+        col.operator("yurameki.bake_cache", icon="ACTION")
 
         box = layout.box()
         box.label(text="Warp")
@@ -65,10 +66,10 @@ class YURAMEKI_PT_main(Panel):
         col.prop(wm, "yurameki_gravity")
         col.prop(wm, "yurameki_damping")
         col.prop(wm, "yurameki_max_velocity_mps")
-        col.prop(wm, "yurameki_particle_mass_kg")
+        col.prop(wm, "yurameki_particle_mass_g")
         col.prop(wm, "yurameki_iterations")
-        col.prop(wm, "yurameki_stretch_compliance")
-        col.prop(wm, "yurameki_bend_compliance")
+        col.prop(wm, "yurameki_stretch_compliance_log10")
+        col.prop(wm, "yurameki_bend_compliance_log10")
 
         box = layout.box()
         box.label(text="Collision")
