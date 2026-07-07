@@ -56,6 +56,9 @@ class WarpSimStats:
     collision_max_correction_mm: float
     collision_response: float
     collision_velocity_damping: float
+    keep_length: bool
+    keep_length_source_frame: int
+    max_keep_length_error_mm: float
     cache_path: str
     device: str
     device_name: str
@@ -504,10 +507,28 @@ def _force_viewport_refresh() -> None:
         pass
 
 
-def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None) -> None:
+def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
+                    pps: int | None = None,
+                    keep_rest_lengths: np.ndarray | None = None,
+                    keep_fallback_dirs: np.ndarray | None = None,
+                    correction_passes: int = 3) -> float:
     bpy.context.scene.frame_set(int(frame))
     _write_world_points(curves_obj, world_pts, offset=offset)
+    max_error = 0.0
+    if pps is not None and keep_rest_lengths is not None and keep_fallback_dirs is not None:
+        for _ in range(max(1, int(correction_passes))):
+            bpy.context.view_layer.update()
+            eval_world, original_world = _read_world(curves_obj)
+            corrected, keep_error = _keep_length_fk(
+                eval_world,
+                int(pps),
+                keep_rest_lengths,
+                keep_fallback_dirs,
+            )
+            max_error = max(max_error, keep_error)
+            _write_world_points(curves_obj, corrected, offset=eval_world - original_world)
     _force_viewport_refresh()
+    return max_error
 
 
 def _world_to_local_points(curves_obj, world_pts: np.ndarray, offset=None) -> np.ndarray:
@@ -575,6 +596,45 @@ def _rest_lengths(points: np.ndarray, pps: int) -> tuple[np.ndarray, np.ndarray]
         np.ascontiguousarray(np.maximum(seg, 1.0e-6).reshape(-1), dtype=np.float32),
         np.ascontiguousarray(np.maximum(bend, 1.0e-6).reshape(-1), dtype=np.float32),
     )
+
+
+def _segment_lengths_and_dirs(points: np.ndarray, pps: int) -> tuple[np.ndarray, np.ndarray]:
+    strands = points.reshape(-1, int(pps), 3)
+    seg = strands[:, 1:, :] - strands[:, :-1, :]
+    lengths = np.linalg.norm(seg, axis=2).astype(np.float32)
+    fallback = np.zeros_like(seg, dtype=np.float32)
+    fallback[:, :, 2] = -1.0
+    valid = lengths > 1.0e-8
+    dirs = fallback
+    dirs[valid] = (seg[valid] / lengths[valid][:, None]).astype(np.float32)
+    return (
+        np.ascontiguousarray(np.maximum(lengths, 1.0e-8), dtype=np.float32),
+        np.ascontiguousarray(dirs, dtype=np.float32),
+    )
+
+
+def _keep_length_fk(points: np.ndarray, pps: int,
+                    rest_lengths: np.ndarray,
+                    fallback_dirs: np.ndarray) -> tuple[np.ndarray, float]:
+    strands = np.asarray(points, dtype=np.float32).reshape(-1, int(pps), 3)
+    if rest_lengths.shape != (strands.shape[0], int(pps) - 1):
+        raise ValueError(
+            "Keep Length rest length shape mismatch: "
+            f"{rest_lengths.shape} != {(strands.shape[0], int(pps) - 1)}"
+        )
+    seg = strands[:, 1:, :] - strands[:, :-1, :]
+    seg_lengths = np.linalg.norm(seg, axis=2).astype(np.float32)
+    valid = seg_lengths > 1.0e-8
+    dirs = np.asarray(fallback_dirs, dtype=np.float32).copy()
+    dirs[valid] = (seg[valid] / seg_lengths[valid][:, None]).astype(np.float32)
+    scaled = dirs * rest_lengths[:, :, None]
+    out = np.empty_like(strands, dtype=np.float32)
+    out[:, 0, :] = strands[:, 0, :]
+    out[:, 1:, :] = out[:, 0:1, :] + np.cumsum(scaled, axis=1, dtype=np.float32)
+    out_seg = out[:, 1:, :] - out[:, :-1, :]
+    out_lengths = np.linalg.norm(out_seg, axis=2)
+    max_error = float(np.max(np.abs(out_lengths - rest_lengths)) * 1000.0) if out_lengths.size else 0.0
+    return np.ascontiguousarray(out.reshape(-1, 3), dtype=np.float32), max_error
 
 
 def _inverse_mass(n_strands: int, pps: int, root_locked_points: int) -> np.ndarray:
@@ -694,14 +754,29 @@ def _read_targets_for_frames(curves_obj, frames: list[int]) -> tuple[dict[int, n
 
 def _bake_position_keyframes(curves_obj, frames: list[int],
                              baked: dict[int, np.ndarray],
-                             offsets: dict[int, np.ndarray]) -> None:
-    local_values = _local_values_from_world(curves_obj, frames, baked, offsets)
+                             offsets: dict[int, np.ndarray],
+                             pps: int | None = None,
+                             keep_rest_lengths: np.ndarray | None = None,
+                             keep_fallback_dirs: np.ndarray | None = None) -> None:
+    local_values = _local_values_from_world(
+        curves_obj,
+        frames,
+        baked,
+        offsets,
+        pps=pps,
+        keep_rest_lengths=keep_rest_lengths,
+        keep_fallback_dirs=keep_fallback_dirs,
+    )
     _bake_local_position_keyframes(curves_obj, frames, local_values)
 
 
 def _local_values_from_world(curves_obj, frames: list[int],
                              baked: dict[int, np.ndarray],
-                             offsets: dict[int, np.ndarray]) -> np.ndarray:
+                             offsets: dict[int, np.ndarray],
+                             pps: int | None = None,
+                             keep_rest_lengths: np.ndarray | None = None,
+                             keep_fallback_dirs: np.ndarray | None = None,
+                             correction_passes: int = 3) -> np.ndarray:
     attr = curves_obj.data.attributes.get("position")
     if attr is None:
         raise ValueError("Curves has no position attribute")
@@ -713,11 +788,28 @@ def _local_values_from_world(curves_obj, frames: list[int],
     local_values = np.empty((len(frames), n_total, 3), dtype=np.float32)
     for frame_index, frame in enumerate(frames):
         scene.frame_set(frame)
-        local_values[frame_index] = _world_to_local_points(
+        local = _world_to_local_points(
             curves_obj,
             baked[frame],
             offset=offsets[frame],
         )
+        if pps is not None and keep_rest_lengths is not None and keep_fallback_dirs is not None:
+            for _ in range(max(1, int(correction_passes))):
+                _write_local_points(curves_obj, local)
+                bpy.context.view_layer.update()
+                eval_world, original_world = _read_world(curves_obj)
+                corrected, _keep_error = _keep_length_fk(
+                    eval_world,
+                    int(pps),
+                    keep_rest_lengths,
+                    keep_fallback_dirs,
+                )
+                local = _world_to_local_points(
+                    curves_obj,
+                    corrected,
+                    offset=eval_world - original_world,
+                )
+        local_values[frame_index] = local
     return local_values
 
 
@@ -803,8 +895,19 @@ def _apply_cache_frame(cache: YuramekiRuntimeCache, frame: int) -> bool:
 
 def _register_sim_cache(curves_obj, frames: list[int],
                         baked: dict[int, np.ndarray],
-                        offsets: dict[int, np.ndarray]) -> YuramekiRuntimeCache:
-    local_values = _local_values_from_world(curves_obj, frames, baked, offsets)
+                        offsets: dict[int, np.ndarray],
+                        pps: int | None = None,
+                        keep_rest_lengths: np.ndarray | None = None,
+                        keep_fallback_dirs: np.ndarray | None = None) -> YuramekiRuntimeCache:
+    local_values = _local_values_from_world(
+        curves_obj,
+        frames,
+        baked,
+        offsets,
+        pps=pps,
+        keep_rest_lengths=keep_rest_lengths,
+        keep_fallback_dirs=keep_fallback_dirs,
+    )
     frame_array = np.asarray(frames, dtype=np.int32)
     path = _cache_file_path(curves_obj, int(frame_array[0]), int(frame_array[-1]))
     np.savez(
@@ -961,6 +1064,13 @@ class WarpJointSimulator:
     def set_targets(self, start: np.ndarray, end: np.ndarray) -> None:
         self.target_start.assign(np.ascontiguousarray(start, dtype=np.float32))
         self.target_end.assign(np.ascontiguousarray(end, dtype=np.float32))
+
+    def set_positions(self, positions: np.ndarray) -> None:
+        positions = np.ascontiguousarray(positions, dtype=np.float32)
+        if positions.shape != (self.n_total, 3):
+            raise ValueError(f"position shape mismatch: {positions.shape} != {(self.n_total, 3)}")
+        self.pos.assign(positions)
+        self.predicted.assign(positions)
 
     def _make_mesh(self, collider_objects, support_winding_number: bool = False) -> tuple[wp.Mesh, int, int]:
         vertices, indices = _evaluated_mesh_arrays(collider_objects)
@@ -1253,6 +1363,7 @@ def simulate(
     max_substeps: int,
     bake_mode: str,
     guide_decimation: int = 1,
+    keep_length: bool = True,
 ) -> WarpSimStats:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
@@ -1277,6 +1388,7 @@ def simulate(
     max_auto_move_mm = 0.0
     total_hits = 0
     last_triangles = 0
+    max_keep_length_error_mm = 0.0
     success = False
     cache_path = ""
     target_worlds = {}
@@ -1290,9 +1402,17 @@ def simulate(
         scene.frame_set(start_frame)
         pps, n_strands = _uniform_points_per_strand(curves_obj)
         locked = max(1, min(int(root_locked_points), pps))
-        target_read_frames = sorted({int(frame) for frame in frames + [original_frame]})
+        keep_length_source_frame = 1
+        target_read_frames = sorted({int(frame) for frame in frames + [original_frame, keep_length_source_frame]})
         target_worlds, offsets = _read_targets_for_frames(curves_obj, target_read_frames)
         init_eval = target_worlds[start_frame]
+        keep_rest_lengths = None
+        keep_fallback_dirs = None
+        if keep_length:
+            keep_rest_lengths, keep_fallback_dirs = _segment_lengths_and_dirs(
+                target_worlds[keep_length_source_frame],
+                pps,
+            )
         guide_indices = _decimated_guide_indices(n_strands, guide_decimation)
         guide_point_indices = _guide_point_indices(guide_indices, pps)
         sim_init = np.ascontiguousarray(init_eval[guide_point_indices], dtype=np.float32)
@@ -1307,8 +1427,28 @@ def simulate(
         simulator = WarpJointSimulator(sim_init, pps, locked, particle_mass)
         prev_targets = sim_init.copy()
         current_world = init_eval.copy()
+        if keep_rest_lengths is not None and keep_fallback_dirs is not None:
+            current_world, keep_error = _keep_length_fk(
+                current_world,
+                pps,
+                keep_rest_lengths,
+                keep_fallback_dirs,
+            )
+            max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
+            current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
+            simulator.set_positions(current_sim_world)
+            prev_targets = current_sim_world.copy()
         baked = {start_frame: current_world.copy()}
-        _show_sim_frame(curves_obj, start_frame, current_world, offset=offsets[start_frame])
+        show_error = _show_sim_frame(
+            curves_obj,
+            start_frame,
+            current_world,
+            offset=offsets[start_frame],
+            pps=pps,
+            keep_rest_lengths=keep_rest_lengths,
+            keep_fallback_dirs=keep_fallback_dirs,
+        )
+        max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
 
         dt_frame = float(scene.render.fps_base) / max(float(scene.render.fps), 1.0)
         for frame in frames[1:]:
@@ -1365,19 +1505,62 @@ def simulate(
                     guide_nearest,
                     guide_weights,
                 )
+            if keep_rest_lengths is not None and keep_fallback_dirs is not None:
+                current_world, keep_error = _keep_length_fk(
+                    current_world,
+                    pps,
+                    keep_rest_lengths,
+                    keep_fallback_dirs,
+                )
+                max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
+                current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
+                simulator.set_positions(current_sim_world)
             total_hits += hits
-            prev_targets = eval_sim_world.copy()
+            prev_targets = current_sim_world.copy() if keep_length else eval_sim_world.copy()
             baked[frame] = current_world.copy()
-            _show_sim_frame(curves_obj, frame, current_world, offset=offsets[frame])
+            show_error = _show_sim_frame(
+                curves_obj,
+                frame,
+                current_world,
+                offset=offsets[frame],
+                pps=pps,
+                keep_rest_lengths=keep_rest_lengths,
+                keep_fallback_dirs=keep_fallback_dirs,
+            )
+            max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
 
         if bake_mode == "KEYFRAMES":
-            _bake_position_keyframes(curves_obj, frames, baked, offsets)
+            _bake_position_keyframes(
+                curves_obj,
+                frames,
+                baked,
+                offsets,
+                pps=pps,
+                keep_rest_lengths=keep_rest_lengths,
+                keep_fallback_dirs=keep_fallback_dirs,
+            )
         elif bake_mode == "CACHE":
-            cache = _register_sim_cache(curves_obj, frames, baked, offsets)
+            cache = _register_sim_cache(
+                curves_obj,
+                frames,
+                baked,
+                offsets,
+                pps=pps,
+                keep_rest_lengths=keep_rest_lengths,
+                keep_fallback_dirs=keep_fallback_dirs,
+            )
             cache_path = cache.path
         else:
-            scene.frame_set(end_frame)
-            _write_world_points(curves_obj, baked[end_frame], offset=offsets[end_frame])
+            show_error = _show_sim_frame(
+                curves_obj,
+                end_frame,
+                baked[end_frame],
+                offset=offsets[end_frame],
+                pps=pps,
+                keep_rest_lengths=keep_rest_lengths,
+                keep_fallback_dirs=keep_fallback_dirs,
+            )
+            max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
         success = True
     finally:
         _CACHE_MUTED = previous_cache_muted
@@ -1411,6 +1594,9 @@ def simulate(
         collision_max_correction_mm=float(collision_max_correction_m) * 1000.0,
         collision_response=min(max(float(collision_response), 0.0), 1.0),
         collision_velocity_damping=min(max(float(collision_velocity_damping), 0.0), 1.0),
+        keep_length=bool(keep_length),
+        keep_length_source_frame=1,
+        max_keep_length_error_mm=max_keep_length_error_mm,
         cache_path=cache_path,
         device=simulator.device,
         device_name=simulator.device_name,

@@ -57,6 +57,7 @@ class YURAMEKI_PT_main(Panel):
         col.prop(wm, "yurameki_sim_end_frame")
         col.prop(wm, "yurameki_sim_bake_mode")
         col.prop(wm, "yurameki_guide_decimation")
+        col.prop(wm, "yurameki_keep_length")
         col.operator("yurameki.simulate", icon="RENDER_ANIMATION")
         col.operator("yurameki.bake_cache", icon="ACTION")
 

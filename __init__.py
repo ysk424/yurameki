@@ -8,6 +8,7 @@ import math
 
 import bpy
 from bpy.props import (
+    BoolProperty,
     EnumProperty,
     FloatProperty,
     FloatVectorProperty,
@@ -184,6 +185,7 @@ def _simulate(context):
             max_substeps=int(wm.yurameki_max_substeps),
             bake_mode=wm.yurameki_sim_bake_mode,
             guide_decimation=int(wm.yurameki_guide_decimation),
+            keep_length=bool(wm.yurameki_keep_length),
         )
     except ImportError as exc:
         return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
@@ -198,6 +200,8 @@ def _simulate(context):
         f"strands={stats.n_strands}, sim={stats.simulated_strands}, "
         f"decim={stats.guide_decimation}, pps={stats.points_per_strand}, "
         f"locked={stats.root_locked_points}, "
+        f"keep_len={'on' if stats.keep_length else 'off'} "
+        f"(F{stats.keep_length_source_frame}, err={stats.max_keep_length_error_mm:.6f}mm), "
         f"auto_move={stats.max_auto_move_mm:.3f}mm, "
         f"vmax={stats.max_velocity_mps:.2f}m/s, "
         f"corr<={stats.collision_max_correction_mm:.2f}mm, "
@@ -349,6 +353,7 @@ _PROP_NAMES = (
     "yurameki_auto_substep_mm",
     "yurameki_max_substeps",
     "yurameki_guide_decimation",
+    "yurameki_keep_length",
     "yurameki_sim_bake_mode",
 )
 
@@ -556,6 +561,12 @@ def register():
             default=int(defaults.get("GUIDE_DECIMATION", 1)),
             min=1,
             max=1000,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_keep_length = BoolProperty(
+            name="KEEP LENGTH",
+            description="Rebuild each strand from the frame-1 rod lengths before previewing, caching, or baking",
+            default=bool(defaults.get("KEEP_LENGTH", True)),
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_sim_bake_mode = EnumProperty(

@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.7.
+Current version: 0.7.8.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,17 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.7`; no native DLL build is required.
+- Latest package target: source tree `0.7.8`; no native DLL build is required.
+
+## 0.7.8 keep length FK
+
+- Added `KEEP LENGTH`, enabled by default. It records frame-1 per-segment rod
+  lengths, then before live preview/cache/final/keyframe output it rebuilds each
+  strand from point 0 using the current simulated rod directions and those
+  frame-1 lengths.
+- The corrected guide/full strand positions are written back into the Warp
+  simulator state after every frame so subsequent frames continue from the
+  length-fixed result.
 
 ## 0.7.7 live frame preview
 
