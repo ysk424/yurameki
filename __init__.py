@@ -209,6 +209,7 @@ def _simulate(context):
         f"resp={stats.collision_response:.2f}, "
         f"contact_damp={stats.collision_velocity_damping:.2f}, "
         f"postKL={stats.post_keep_collision_hits}/{stats.post_keep_active_strands}, "
+        f"bodyGuard={stats.body_hard_guard_points}, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
         f"{stats.device} sm_{stats.device_arch}, "
         f"bake={stats.bake_mode.lower()}{cache_text}, time={stats.elapsed_sec:.2f}s",

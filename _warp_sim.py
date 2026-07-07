@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from bpy.app.handlers import persistent
 import bpy
+from mathutils import Vector
 import numpy as np
 import warp as wp
 
@@ -58,6 +59,7 @@ class WarpSimStats:
     collision_velocity_damping: float
     post_keep_collision_hits: int
     post_keep_active_strands: int
+    body_hard_guard_points: int
     keep_length: bool
     keep_length_source_frame: int
     max_keep_length_error_mm: float
@@ -691,6 +693,9 @@ def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
                     pps: int | None = None,
                     keep_rest_lengths: np.ndarray | None = None,
                     keep_fallback_dirs: np.ndarray | None = None,
+                    body_hard_guard_obj=None,
+                    body_hard_guard_margin: float = 0.0,
+                    body_hard_guard_seed=None,
                     correction_passes: int = 3) -> float:
     bpy.context.scene.frame_set(int(frame))
     _write_world_points(curves_obj, world_pts, offset=offset)
@@ -707,6 +712,16 @@ def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
             )
             max_error = max(max_error, keep_error)
             _write_world_points(curves_obj, corrected, offset=eval_world - original_world)
+    if body_hard_guard_obj is not None and body_hard_guard_seed is not None:
+        bpy.context.view_layer.update()
+        eval_world, original_world = _read_world(curves_obj)
+        guarded, _fixed = _apply_body_seed_hard_guard(
+            eval_world,
+            body_hard_guard_obj,
+            body_hard_guard_margin,
+            body_hard_guard_seed,
+        )
+        _write_world_points(curves_obj, guarded, offset=eval_world - original_world)
     _force_viewport_refresh()
     return max_error
 
@@ -766,6 +781,95 @@ def _evaluated_mesh_arrays(objects) -> tuple[np.ndarray, np.ndarray]:
     vertices = np.ascontiguousarray(np.vstack(vertices_out), dtype=np.float32)
     indices = np.ascontiguousarray(np.vstack(indices_out).reshape(-1), dtype=np.int32)
     return vertices, indices
+
+
+def _armature_from_object(obj):
+    if obj is None:
+        return None
+    parent = getattr(obj, "parent", None)
+    if parent is not None and parent.type == "ARMATURE":
+        return parent
+    for mod in getattr(obj, "modifiers", ()):
+        if mod.type == "ARMATURE" and getattr(mod, "object", None) is not None:
+            return mod.object
+    return None
+
+
+def _head_seed_world(body_obj):
+    armature = _armature_from_object(body_obj)
+    if armature is None:
+        return None
+    candidates = (
+        "CC_Base_Head",
+        "Head",
+        "head",
+    )
+    bone_name = None
+    for name in candidates:
+        if name in armature.pose.bones or name in armature.data.bones:
+            bone_name = name
+            break
+    if bone_name is None:
+        for bone in armature.data.bones:
+            if "head" in bone.name.lower():
+                bone_name = bone.name
+                break
+    if bone_name is None:
+        return None
+    pose_bone = armature.pose.bones.get(bone_name)
+    if pose_bone is not None:
+        return armature.matrix_world @ pose_bone.tail
+    bone = armature.data.bones.get(bone_name)
+    return armature.matrix_world @ bone.tail_local if bone is not None else None
+
+
+def _apply_body_seed_hard_guard(points: np.ndarray, body_obj,
+                                margin: float,
+                                seed_world=None) -> tuple[np.ndarray, int]:
+    if body_obj is None or body_obj.type != "MESH":
+        return points, 0
+    if seed_world is None:
+        seed_world = _head_seed_world(body_obj)
+    if seed_world is None:
+        return points, 0
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = body_obj.evaluated_get(depsgraph)
+    matrix = evaluated.matrix_world.copy()
+    matrix_inv = matrix.inverted()
+    seed_local = matrix_inv @ Vector(seed_world)
+    dims = getattr(body_obj, "dimensions", (1.0, 1.0, 1.0))
+    body_span = max(float(max(dims)), 0.5)
+    margin = max(float(margin), 0.0)
+    out = np.asarray(points, dtype=np.float32).copy()
+    fixed = 0
+
+    for index, point in enumerate(out):
+        p_world = Vector((float(point[0]), float(point[1]), float(point[2])))
+        p_local = matrix_inv @ p_world
+        local_delta = p_local - seed_local
+        local_dist = float(local_delta.length)
+        if local_dist <= 1.0e-8:
+            continue
+        local_dir = local_delta / local_dist
+        hit, _loc, _normal, _face = evaluated.ray_cast(seed_local, local_dir, distance=local_dist)
+        if hit:
+            continue
+
+        far_dist = max(local_dist + body_span * 2.0, body_span * 3.0)
+        hit, loc, normal, _face = evaluated.ray_cast(seed_local, local_dir, distance=far_dist)
+        if not hit:
+            continue
+
+        loc_world = matrix @ loc
+        normal_world = (matrix.to_3x3() @ normal).normalized()
+        direction_world = (p_world - Vector(seed_world)).normalized()
+        if normal_world.dot(direction_world) < 0.0:
+            normal_world.negate()
+        corrected = loc_world + normal_world * margin
+        out[index] = (corrected.x, corrected.y, corrected.z)
+        fixed += 1
+    return np.ascontiguousarray(out, dtype=np.float32), fixed
 
 
 def _rest_lengths(points: np.ndarray, pps: int) -> tuple[np.ndarray, np.ndarray]:
@@ -937,7 +1041,10 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
                              offsets: dict[int, np.ndarray],
                              pps: int | None = None,
                              keep_rest_lengths: np.ndarray | None = None,
-                             keep_fallback_dirs: np.ndarray | None = None) -> None:
+                             keep_fallback_dirs: np.ndarray | None = None,
+                             body_hard_guard_obj=None,
+                             body_hard_guard_margin: float = 0.0,
+                             body_hard_guard_seed=None) -> None:
     local_values = _local_values_from_world(
         curves_obj,
         frames,
@@ -946,6 +1053,9 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
         pps=pps,
         keep_rest_lengths=keep_rest_lengths,
         keep_fallback_dirs=keep_fallback_dirs,
+        body_hard_guard_obj=body_hard_guard_obj,
+        body_hard_guard_margin=body_hard_guard_margin,
+        body_hard_guard_seed=body_hard_guard_seed,
     )
     _bake_local_position_keyframes(curves_obj, frames, local_values)
 
@@ -956,6 +1066,9 @@ def _local_values_from_world(curves_obj, frames: list[int],
                              pps: int | None = None,
                              keep_rest_lengths: np.ndarray | None = None,
                              keep_fallback_dirs: np.ndarray | None = None,
+                             body_hard_guard_obj=None,
+                             body_hard_guard_margin: float = 0.0,
+                             body_hard_guard_seed=None,
                              correction_passes: int = 3) -> np.ndarray:
     attr = curves_obj.data.attributes.get("position")
     if attr is None:
@@ -989,6 +1102,21 @@ def _local_values_from_world(curves_obj, frames: list[int],
                     corrected,
                     offset=eval_world - original_world,
                 )
+        if body_hard_guard_obj is not None and body_hard_guard_seed is not None:
+            _write_local_points(curves_obj, local)
+            bpy.context.view_layer.update()
+            eval_world, original_world = _read_world(curves_obj)
+            guarded, _fixed = _apply_body_seed_hard_guard(
+                eval_world,
+                body_hard_guard_obj,
+                body_hard_guard_margin,
+                body_hard_guard_seed,
+            )
+            local = _world_to_local_points(
+                curves_obj,
+                guarded,
+                offset=eval_world - original_world,
+            )
         local_values[frame_index] = local
     return local_values
 
@@ -1078,7 +1206,10 @@ def _register_sim_cache(curves_obj, frames: list[int],
                         offsets: dict[int, np.ndarray],
                         pps: int | None = None,
                         keep_rest_lengths: np.ndarray | None = None,
-                        keep_fallback_dirs: np.ndarray | None = None) -> YuramekiRuntimeCache:
+                        keep_fallback_dirs: np.ndarray | None = None,
+                        body_hard_guard_obj=None,
+                        body_hard_guard_margin: float = 0.0,
+                        body_hard_guard_seed=None) -> YuramekiRuntimeCache:
     local_values = _local_values_from_world(
         curves_obj,
         frames,
@@ -1087,6 +1218,9 @@ def _register_sim_cache(curves_obj, frames: list[int],
         pps=pps,
         keep_rest_lengths=keep_rest_lengths,
         keep_fallback_dirs=keep_fallback_dirs,
+        body_hard_guard_obj=body_hard_guard_obj,
+        body_hard_guard_margin=body_hard_guard_margin,
+        body_hard_guard_seed=body_hard_guard_seed,
     )
     frame_array = np.asarray(frames, dtype=np.int32)
     path = _cache_file_path(curves_obj, int(frame_array[0]), int(frame_array[-1]))
@@ -1672,6 +1806,7 @@ def simulate(
     total_hits = 0
     post_keep_hits_total = 0
     post_keep_active_strands_total = 0
+    body_hard_guard_points_total = 0
     last_triangles = 0
     max_keep_length_error_mm = 0.0
     success = False
@@ -1701,6 +1836,8 @@ def simulate(
         guide_indices = _decimated_guide_indices(n_strands, guide_decimation)
         guide_point_indices = _guide_point_indices(guide_indices, pps)
         post_keep_contact_ttl = np.zeros(len(guide_indices), dtype=np.int32)
+        body_hard_guard_obj = collider_objects[0]
+        body_hard_guard_seed = _head_seed_world(body_hard_guard_obj)
         guide_keep_rest_lengths = None
         if keep_rest_lengths is not None:
             guide_keep_rest_lengths = np.ascontiguousarray(keep_rest_lengths[guide_indices], dtype=np.float32)
@@ -1729,6 +1866,17 @@ def simulate(
             current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
             simulator.set_positions(current_sim_world)
             prev_targets = current_sim_world.copy()
+        current_world, guard_fixed = _apply_body_seed_hard_guard(
+            current_world,
+            body_hard_guard_obj,
+            float(collision_margin_m),
+            body_hard_guard_seed,
+        )
+        body_hard_guard_points_total += guard_fixed
+        if guard_fixed:
+            current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
+            simulator.set_positions(current_sim_world)
+            prev_targets = current_sim_world.copy()
         baked = {start_frame: current_world.copy()}
         show_error = _show_sim_frame(
             curves_obj,
@@ -1738,6 +1886,9 @@ def simulate(
             pps=pps,
             keep_rest_lengths=keep_rest_lengths,
             keep_fallback_dirs=keep_fallback_dirs,
+            body_hard_guard_obj=body_hard_guard_obj,
+            body_hard_guard_margin=float(collision_margin_m),
+            body_hard_guard_seed=body_hard_guard_seed,
         )
         max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
 
@@ -1843,8 +1994,18 @@ def simulate(
                 keep_contacts = (contact_strands != 0) | (post_contacts != 0)
                 post_keep_contact_ttl = np.maximum(post_keep_contact_ttl - 1, 0)
                 post_keep_contact_ttl[keep_contacts] = POST_KEEP_CONTACT_TTL_FRAMES
+            current_world, guard_fixed = _apply_body_seed_hard_guard(
+                current_world,
+                body_hard_guard_obj,
+                float(collision_margin_m),
+                body_hard_guard_seed,
+            )
+            body_hard_guard_points_total += guard_fixed
+            if guard_fixed:
+                current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
+                simulator.set_positions(current_sim_world)
             total_hits += hits + post_hits
-            prev_targets = current_sim_world.copy() if keep_length else eval_sim_world.copy()
+            prev_targets = current_sim_world.copy() if (keep_length or guard_fixed) else eval_sim_world.copy()
             baked[frame] = current_world.copy()
             show_error = _show_sim_frame(
                 curves_obj,
@@ -1854,6 +2015,9 @@ def simulate(
                 pps=pps,
                 keep_rest_lengths=keep_rest_lengths,
                 keep_fallback_dirs=keep_fallback_dirs,
+                body_hard_guard_obj=body_hard_guard_obj,
+                body_hard_guard_margin=float(collision_margin_m),
+                body_hard_guard_seed=body_hard_guard_seed,
             )
             max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
 
@@ -1866,6 +2030,9 @@ def simulate(
                 pps=pps,
                 keep_rest_lengths=keep_rest_lengths,
                 keep_fallback_dirs=keep_fallback_dirs,
+                body_hard_guard_obj=body_hard_guard_obj,
+                body_hard_guard_margin=float(collision_margin_m),
+                body_hard_guard_seed=body_hard_guard_seed,
             )
         elif bake_mode == "CACHE":
             cache = _register_sim_cache(
@@ -1876,6 +2043,9 @@ def simulate(
                 pps=pps,
                 keep_rest_lengths=keep_rest_lengths,
                 keep_fallback_dirs=keep_fallback_dirs,
+                body_hard_guard_obj=body_hard_guard_obj,
+                body_hard_guard_margin=float(collision_margin_m),
+                body_hard_guard_seed=body_hard_guard_seed,
             )
             cache_path = cache.path
         else:
@@ -1924,6 +2094,7 @@ def simulate(
         collision_velocity_damping=min(max(float(collision_velocity_damping), 0.0), 1.0),
         post_keep_collision_hits=post_keep_hits_total,
         post_keep_active_strands=post_keep_active_strands_total,
+        body_hard_guard_points=body_hard_guard_points_total,
         keep_length=bool(keep_length),
         keep_length_source_frame=1,
         max_keep_length_error_mm=max_keep_length_error_mm,

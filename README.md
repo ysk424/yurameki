@@ -1,4 +1,4 @@
-# Yurameki 0.7.11
+# Yurameki 0.7.12
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -113,6 +113,10 @@ full strand/triangle brute-force pass after FK length restoration.
 Collision-corrected points are marked on the GPU and their derived velocity is
 zeroed by default, so collider repair does not become rebound energy on the next
 substep.
+After KEEP/post-KEEP correction, Yurameki also runs a Body proxy hard guard from
+the Head bone end point. If the ray from that internal seed to a hair point does
+not cross the Body proxy, the point is treated as still inside the head and is
+pushed to the first outward skin crossing plus collision margin.
 Hair-hair collision is not implemented.
 
 The operator report includes the actual number of frame transitions and

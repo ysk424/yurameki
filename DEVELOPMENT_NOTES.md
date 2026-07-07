@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.11.
+Current version: 0.7.12.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,20 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.11`; no native DLL build is required.
+- Latest package target: source tree `0.7.12`; no native DLL build is required.
+
+## 0.7.12 head-seed Body hard guard
+
+- Added a final Body proxy hard guard that uses the Head bone end as an internal
+  seed point. For each final hair point, the guard raycasts from that seed to
+  the point against the Body proxy only.
+- If the seed-to-point segment crosses the Body proxy, the point is treated as
+  outside. If it does not cross, the point is treated as still inside and is
+  moved to the first outward skin crossing plus the collision margin.
+- The guard runs after KEEP/post-KEEP correction and also during preview/cache
+  conversion so later length correction cannot quietly reintroduce the same
+  inside-head output.
+- `Simulate` reports corrected point count as `bodyGuard=...`.
 
 ## 0.7.11 proxy boundary caps
 
