@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.12.
+Current version: 0.7.13.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,25 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.12`; no native DLL build is required.
+- Latest package target: source tree `0.7.13`; no native DLL build is required.
+
+## 0.7.13 Body FK hard repair
+
+- Added a CPU reference Body FK hard repair pass after KEEP/post-KEEP and the
+  Head-seed Body hard guard. It processes active strands root-to-tip and
+  preserves frame-1 segment lengths where possible.
+- Inside/outside decisions still use the Body proxy only. The first seed is the
+  Head bone end, and additional Head/Neck/Spine/Chest bone endpoints are
+  available for nearest-root seed selection.
+- When a candidate joint is invalid, the repair searches from the XPBD segment
+  direction toward the strand's straight continuation. Collision normals are
+  used only for final seed-ray escape placement and margin.
+- Active repair is driven by current/post-KEEP contact, recent FK repair TTL,
+  and strands corrected by the seed hard guard. Repaired/guarded guide strands
+  have their Warp velocities zeroed so invalid inward energy is not carried
+  into the next frame.
+- `Simulate` reports `bodyFK=strands/points`, `escape`, `fail`, and velocity
+  zero count `vz`.
 
 ## 0.7.12 head-seed Body hard guard
 

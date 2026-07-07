@@ -210,6 +210,9 @@ def _simulate(context):
         f"contact_damp={stats.collision_velocity_damping:.2f}, "
         f"postKL={stats.post_keep_collision_hits}/{stats.post_keep_active_strands}, "
         f"bodyGuard={stats.body_hard_guard_points}, "
+        f"bodyFK={stats.body_fk_repair_strands}/{stats.body_fk_repair_points}, "
+        f"escape={stats.body_fk_escape_points}, fail={stats.body_fk_failed_points}, "
+        f"vz={stats.body_fk_velocity_zeroed}, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
         f"{stats.device} sm_{stats.device_arch}, "
         f"bake={stats.bake_mode.lower()}{cache_text}, time={stats.elapsed_sec:.2f}s",

@@ -60,6 +60,11 @@ class WarpSimStats:
     post_keep_collision_hits: int
     post_keep_active_strands: int
     body_hard_guard_points: int
+    body_fk_repair_strands: int
+    body_fk_repair_points: int
+    body_fk_escape_points: int
+    body_fk_failed_points: int
+    body_fk_velocity_zeroed: int
     keep_length: bool
     keep_length_source_frame: int
     max_keep_length_error_mm: float
@@ -91,9 +96,20 @@ class YuramekiRuntimeCache:
         return int(self.local_values.shape[1])
 
 
+@dataclass
+class BodyFkRepairStats:
+    strands: int = 0
+    points: int = 0
+    escape_points: int = 0
+    failed_points: int = 0
+
+
 _CACHE_REGISTRY: dict[str, YuramekiRuntimeCache] = {}
 _CACHE_MUTED = False
 POST_KEEP_CONTACT_TTL_FRAMES = 3
+BODY_FK_REPAIR_TTL_FRAMES = 3
+BODY_FK_SEARCH_T_VALUES = (0.25, 0.50, 0.75, 1.00)
+BODY_FK_BINARY_STEPS = 3
 
 
 @wp.func
@@ -696,6 +712,7 @@ def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
                     body_hard_guard_obj=None,
                     body_hard_guard_margin: float = 0.0,
                     body_hard_guard_seed=None,
+                    body_fk_root_locked_points: int = 1,
                     correction_passes: int = 3) -> float:
     bpy.context.scene.frame_set(int(frame))
     _write_world_points(curves_obj, world_pts, offset=offset)
@@ -715,12 +732,33 @@ def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
     if body_hard_guard_obj is not None and body_hard_guard_seed is not None:
         bpy.context.view_layer.update()
         eval_world, original_world = _read_world(curves_obj)
-        guarded, _fixed = _apply_body_seed_hard_guard(
-            eval_world,
-            body_hard_guard_obj,
-            body_hard_guard_margin,
-            body_hard_guard_seed,
-        )
+        if pps is not None:
+            guarded, fixed, guard_strands = _apply_body_seed_hard_guard(
+                eval_world,
+                body_hard_guard_obj,
+                body_hard_guard_margin,
+                body_hard_guard_seed,
+                points_per_strand=int(pps),
+            )
+            if fixed and keep_rest_lengths is not None and keep_fallback_dirs is not None:
+                guarded, _repair_stats, _repair_strands = _apply_body_fk_hard_repair(
+                    guarded,
+                    int(pps),
+                    keep_rest_lengths,
+                    keep_fallback_dirs,
+                    body_hard_guard_obj,
+                    body_hard_guard_margin,
+                    body_hard_guard_seed,
+                    root_locked_points=int(body_fk_root_locked_points),
+                    active_strands=guard_strands,
+                )
+        else:
+            guarded, _fixed = _apply_body_seed_hard_guard(
+                eval_world,
+                body_hard_guard_obj,
+                body_hard_guard_margin,
+                body_hard_guard_seed,
+            )
         _write_world_points(curves_obj, guarded, offset=eval_world - original_world)
     _force_viewport_refresh()
     return max_error
@@ -823,15 +861,355 @@ def _head_seed_world(body_obj):
     return armature.matrix_world @ bone.tail_local if bone is not None else None
 
 
+@dataclass
+class _BodyRayContext:
+    evaluated: object
+    matrix: object
+    matrix_inv: object
+    normal_matrix: object
+    margin: float
+    body_span: float
+
+
+def _body_ray_context(body_obj, margin: float):
+    if body_obj is None or body_obj.type != "MESH":
+        return None
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = body_obj.evaluated_get(depsgraph)
+    matrix = evaluated.matrix_world.copy()
+    dims = getattr(body_obj, "dimensions", (1.0, 1.0, 1.0))
+    return _BodyRayContext(
+        evaluated=evaluated,
+        matrix=matrix,
+        matrix_inv=matrix.inverted(),
+        normal_matrix=matrix.to_3x3(),
+        margin=max(float(margin), 0.0),
+        body_span=max(float(max(dims)), 0.5),
+    )
+
+
+def _vector_np(v: Vector) -> np.ndarray:
+    return np.asarray((float(v.x), float(v.y), float(v.z)), dtype=np.float32)
+
+
+def _normalize_np(v: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+    length = float(np.linalg.norm(v))
+    if length > 1.0e-8:
+        return (v / length).astype(np.float32, copy=False)
+    fallback_length = float(np.linalg.norm(fallback))
+    if fallback_length > 1.0e-8:
+        return (fallback / fallback_length).astype(np.float32, copy=False)
+    return np.asarray((0.0, 0.0, -1.0), dtype=np.float32)
+
+
+def _slerp_direction_np(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    a = _normalize_np(np.asarray(a, dtype=np.float32), np.asarray((0.0, 0.0, -1.0), dtype=np.float32))
+    b = _normalize_np(np.asarray(b, dtype=np.float32), a)
+    dot = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    if dot > 0.9995:
+        return _normalize_np((1.0 - float(t)) * a + float(t) * b, b)
+    if dot < -0.9995:
+        return b.copy()
+    theta = math.acos(dot)
+    sin_theta = math.sin(theta)
+    wa = math.sin((1.0 - float(t)) * theta) / sin_theta
+    wb = math.sin(float(t) * theta) / sin_theta
+    return _normalize_np(wa * a + wb * b, b)
+
+
+def _append_unique_seed(seeds: list[np.ndarray], seed_world) -> None:
+    if seed_world is None:
+        return
+    seed = _vector_np(Vector(seed_world))
+    for existing in seeds:
+        if float(np.linalg.norm(existing - seed)) < 1.0e-5:
+            return
+    seeds.append(seed)
+
+
+def _body_internal_seed_points(body_obj, preferred_seed=None) -> np.ndarray:
+    seeds: list[np.ndarray] = []
+    _append_unique_seed(seeds, preferred_seed)
+    armature = _armature_from_object(body_obj)
+    if armature is not None:
+        terms = ("head", "neck", "spine", "chest")
+        pose_bones = getattr(armature.pose, "bones", ())
+        for pose_bone in pose_bones:
+            lower = pose_bone.name.lower()
+            if not any(term in lower for term in terms):
+                continue
+            _append_unique_seed(seeds, armature.matrix_world @ pose_bone.head)
+            _append_unique_seed(seeds, armature.matrix_world @ pose_bone.tail)
+    if not seeds:
+        _append_unique_seed(seeds, _head_seed_world(body_obj))
+    if not seeds:
+        return np.empty((0, 3), dtype=np.float32)
+    return np.ascontiguousarray(np.vstack(seeds), dtype=np.float32)
+
+
+def _choose_body_seed(point: np.ndarray,
+                      strand_root: np.ndarray | None,
+                      seeds: np.ndarray) -> Vector | None:
+    if seeds is None or len(seeds) == 0:
+        return None
+    ref = np.asarray(strand_root if strand_root is not None else point, dtype=np.float32)
+    delta = seeds - ref[None, :]
+    index = int(np.argmin(np.einsum("ij,ij->i", delta, delta)))
+    seed = seeds[index]
+    return Vector((float(seed[0]), float(seed[1]), float(seed[2])))
+
+
+def _body_seed_outside_test(point: np.ndarray,
+                            ctx: _BodyRayContext,
+                            seed_world: Vector) -> bool:
+    p_world = Vector((float(point[0]), float(point[1]), float(point[2])))
+    p_local = ctx.matrix_inv @ p_world
+    seed_local = ctx.matrix_inv @ seed_world
+    local_delta = p_local - seed_local
+    local_dist = float(local_delta.length)
+    if local_dist <= 1.0e-8:
+        return False
+    local_dir = local_delta / local_dist
+    hit, _loc, _normal, _face = ctx.evaluated.ray_cast(
+        seed_local,
+        local_dir,
+        distance=local_dist + 1.0e-6,
+    )
+    return bool(hit)
+
+
+def _body_seed_escape_point(point: np.ndarray,
+                            ctx: _BodyRayContext,
+                            seed_world: Vector) -> tuple[np.ndarray, bool]:
+    p_world = Vector((float(point[0]), float(point[1]), float(point[2])))
+    p_local = ctx.matrix_inv @ p_world
+    seed_local = ctx.matrix_inv @ seed_world
+    local_delta = p_local - seed_local
+    local_dist = float(local_delta.length)
+    if local_dist <= 1.0e-8:
+        return np.asarray(point, dtype=np.float32), False
+    local_dir = local_delta / local_dist
+    far_dist = max(local_dist + ctx.body_span * 2.0, ctx.body_span * 3.0)
+    hit, loc, normal, _face = ctx.evaluated.ray_cast(seed_local, local_dir, distance=far_dist)
+    if not hit:
+        return np.asarray(point, dtype=np.float32), False
+    loc_world = ctx.matrix @ loc
+    normal_world = (ctx.normal_matrix @ normal).normalized()
+    direction_world = p_world - seed_world
+    if direction_world.length > 1.0e-8:
+        direction_world.normalize()
+        if normal_world.dot(direction_world) < 0.0:
+            normal_world.negate()
+    corrected = loc_world + normal_world * ctx.margin
+    return _vector_np(corrected), True
+
+
+def _valid_body_segment(prev: np.ndarray,
+                        candidate: np.ndarray,
+                        ctx: _BodyRayContext,
+                        seed_world: Vector) -> bool:
+    if not _body_seed_outside_test(candidate, ctx, seed_world):
+        return False
+    p0 = Vector((float(prev[0]), float(prev[1]), float(prev[2])))
+    p1 = Vector((float(candidate[0]), float(candidate[1]), float(candidate[2])))
+    p0_local = ctx.matrix_inv @ p0
+    p1_local = ctx.matrix_inv @ p1
+    delta = p1_local - p0_local
+    distance = float(delta.length)
+    if distance <= 1.0e-8:
+        return True
+    direction = delta / distance
+    eps = max(1.0e-5, ctx.margin * 0.25)
+    hit, loc, _normal, _face = ctx.evaluated.ray_cast(p0_local, direction, distance=distance)
+    if not hit:
+        return True
+    hit_distance = float((loc - p0_local).length)
+    if eps < hit_distance < distance - eps:
+        return False
+    if hit_distance <= eps and distance > eps * 2.0:
+        origin = p0_local + direction * eps
+        hit2, loc2, _normal2, _face2 = ctx.evaluated.ray_cast(origin, direction, distance=distance - eps)
+        if hit2:
+            hit2_distance = eps + float((loc2 - origin).length)
+            if eps < hit2_distance < distance - eps:
+                return False
+    return True
+
+
+def _repair_strand_fk_body(strand: np.ndarray,
+                           rest_lengths: np.ndarray,
+                           fallback_dirs: np.ndarray,
+                           locked: int,
+                           ctx: _BodyRayContext,
+                           seed_world: Vector) -> tuple[np.ndarray, BodyFkRepairStats, np.ndarray]:
+    pps = int(strand.shape[0])
+    locked = max(1, min(int(locked), pps))
+    repaired = np.asarray(strand, dtype=np.float32).copy()
+    point_mask = np.zeros(pps, dtype=np.int32)
+    stats = BodyFkRepairStats()
+
+    for i in range(locked, pps):
+        prev = repaired[i - 1]
+        if i >= 2:
+            prevprev = repaired[i - 2]
+            straight_fallback = prev - prevprev
+        else:
+            straight_fallback = np.asarray(fallback_dirs[max(i - 1, 0)], dtype=np.float32)
+            prevprev = prev - straight_fallback
+        segment_index = max(0, min(i - 1, len(rest_lengths) - 1))
+        length = max(float(rest_lengths[segment_index]), 1.0e-8)
+        fallback_dir = np.asarray(fallback_dirs[segment_index], dtype=np.float32)
+        straight_dir = _normalize_np(prev - prevprev, fallback_dir)
+        xpbd_dir = _normalize_np(np.asarray(strand[i], dtype=np.float32) - prev, straight_dir)
+        candidate = (prev + xpbd_dir * length).astype(np.float32, copy=False)
+
+        if _valid_body_segment(prev, candidate, ctx, seed_world):
+            repaired[i] = candidate
+            continue
+
+        found = None
+        lower_t = 0.0
+        upper_t = None
+        for t in BODY_FK_SEARCH_T_VALUES:
+            direction = _slerp_direction_np(xpbd_dir, straight_dir, t)
+            test = (prev + direction * length).astype(np.float32, copy=False)
+            if _valid_body_segment(prev, test, ctx, seed_world):
+                upper_t = float(t)
+                break
+            lower_t = float(t)
+
+        if upper_t is not None:
+            hi = upper_t
+            lo = lower_t
+            found = (prev + _slerp_direction_np(xpbd_dir, straight_dir, hi) * length).astype(np.float32, copy=False)
+            for _step in range(BODY_FK_BINARY_STEPS):
+                mid = (lo + hi) * 0.5
+                direction = _slerp_direction_np(xpbd_dir, straight_dir, mid)
+                test = (prev + direction * length).astype(np.float32, copy=False)
+                if _valid_body_segment(prev, test, ctx, seed_world):
+                    hi = mid
+                    found = test
+                else:
+                    lo = mid
+
+        if found is not None:
+            repaired[i] = found
+            point_mask[i] = 1
+            stats.points += 1
+            continue
+
+        escape, escaped = _body_seed_escape_point(candidate, ctx, seed_world)
+        if escaped:
+            escape_dir = _normalize_np(escape - prev, straight_dir)
+            length_candidate = (prev + escape_dir * length).astype(np.float32, copy=False)
+            if _valid_body_segment(prev, length_candidate, ctx, seed_world):
+                repaired[i] = length_candidate
+            else:
+                repaired[i] = escape
+                if (
+                    not _body_seed_outside_test(escape, ctx, seed_world)
+                    or not _valid_body_segment(prev, escape, ctx, seed_world)
+                ):
+                    stats.failed_points += 1
+            point_mask[i] = 1
+            stats.points += 1
+            stats.escape_points += 1
+        else:
+            repaired[i] = candidate
+            point_mask[i] = 1
+            stats.points += 1
+            stats.failed_points += 1
+
+    if np.any(point_mask):
+        stats.strands = 1
+    return repaired, stats, point_mask
+
+
+def _apply_body_fk_hard_repair(points: np.ndarray,
+                               pps: int,
+                               rest_lengths: np.ndarray | None,
+                               fallback_dirs: np.ndarray | None,
+                               body_obj,
+                               margin: float,
+                               seed_world=None,
+                               root_locked_points: int = 1,
+                               active_strands: np.ndarray | None = None
+                               ) -> tuple[np.ndarray, BodyFkRepairStats, np.ndarray]:
+    if body_obj is None or body_obj.type != "MESH":
+        n_strands = int(len(points) // max(int(pps), 1))
+        return points, BodyFkRepairStats(), np.zeros(n_strands, dtype=np.int32)
+    pps = int(pps)
+    if pps < 2:
+        return points, BodyFkRepairStats(), np.zeros(0, dtype=np.int32)
+    strands = np.asarray(points, dtype=np.float32).reshape(-1, pps, 3)
+    n_strands = int(strands.shape[0])
+    if rest_lengths is None or fallback_dirs is None:
+        return points, BodyFkRepairStats(), np.zeros(n_strands, dtype=np.int32)
+    rest = np.asarray(rest_lengths, dtype=np.float32)
+    fallback = np.asarray(fallback_dirs, dtype=np.float32)
+    if rest.shape != (n_strands, pps - 1) or fallback.shape != (n_strands, pps - 1, 3):
+        return points, BodyFkRepairStats(), np.zeros(n_strands, dtype=np.int32)
+    seeds = _body_internal_seed_points(body_obj, preferred_seed=seed_world)
+    if len(seeds) == 0:
+        return points, BodyFkRepairStats(), np.zeros(n_strands, dtype=np.int32)
+    ctx = _body_ray_context(body_obj, margin)
+    if ctx is None:
+        return points, BodyFkRepairStats(), np.zeros(n_strands, dtype=np.int32)
+
+    if active_strands is None:
+        active = np.ones(n_strands, dtype=bool)
+    else:
+        active = np.asarray(active_strands, dtype=bool).reshape(-1)
+        if active.shape != (n_strands,):
+            raise ValueError(f"body FK active shape mismatch: {active.shape} != {(n_strands,)}")
+    if not np.any(active):
+        return points, BodyFkRepairStats(), np.zeros(n_strands, dtype=np.int32)
+
+    out = strands.copy()
+    repaired_strands = np.zeros(n_strands, dtype=np.int32)
+    total = BodyFkRepairStats()
+    for strand_index in np.flatnonzero(active):
+        strand = out[int(strand_index)]
+        seed = _choose_body_seed(strand[-1], strand[0], seeds)
+        if seed is None:
+            continue
+        repaired, stats, point_mask = _repair_strand_fk_body(
+            strand,
+            rest[int(strand_index)],
+            fallback[int(strand_index)],
+            int(root_locked_points),
+            ctx,
+            seed,
+        )
+        if stats.points > 0:
+            out[int(strand_index)] = repaired
+            repaired_strands[int(strand_index)] = 1
+            total.strands += stats.strands
+            total.points += stats.points
+            total.escape_points += stats.escape_points
+            total.failed_points += stats.failed_points
+    return np.ascontiguousarray(out.reshape(-1, 3), dtype=np.float32), total, repaired_strands
+
+
 def _apply_body_seed_hard_guard(points: np.ndarray, body_obj,
                                 margin: float,
-                                seed_world=None) -> tuple[np.ndarray, int]:
+                                seed_world=None,
+                                points_per_strand: int | None = None):
+    pps_for_mask = int(points_per_strand) if points_per_strand is not None else 0
+    empty_strands = np.zeros(
+        int(math.ceil(len(points) / float(pps_for_mask))) if pps_for_mask > 0 else 0,
+        dtype=np.int32,
+    )
     if body_obj is None or body_obj.type != "MESH":
-        return points, 0
+        if points_per_strand is None:
+            return points, 0
+        return points, 0, empty_strands
     if seed_world is None:
         seed_world = _head_seed_world(body_obj)
     if seed_world is None:
-        return points, 0
+        if points_per_strand is None:
+            return points, 0
+        return points, 0, empty_strands
 
     depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = body_obj.evaluated_get(depsgraph)
@@ -843,6 +1221,10 @@ def _apply_body_seed_hard_guard(points: np.ndarray, body_obj,
     margin = max(float(margin), 0.0)
     out = np.asarray(points, dtype=np.float32).copy()
     fixed = 0
+    fixed_strands = None
+    pps = pps_for_mask
+    if pps > 0:
+        fixed_strands = empty_strands
 
     for index, point in enumerate(out):
         p_world = Vector((float(point[0]), float(point[1]), float(point[2])))
@@ -869,7 +1251,11 @@ def _apply_body_seed_hard_guard(points: np.ndarray, body_obj,
         corrected = loc_world + normal_world * margin
         out[index] = (corrected.x, corrected.y, corrected.z)
         fixed += 1
-    return np.ascontiguousarray(out, dtype=np.float32), fixed
+        if fixed_strands is not None:
+            fixed_strands[int(index // pps)] = 1
+    if fixed_strands is None:
+        return np.ascontiguousarray(out, dtype=np.float32), fixed
+    return np.ascontiguousarray(out, dtype=np.float32), fixed, fixed_strands
 
 
 def _rest_lengths(points: np.ndarray, pps: int) -> tuple[np.ndarray, np.ndarray]:
@@ -940,6 +1326,23 @@ def _decimated_guide_indices(n_strands: int, guide_decimation: int) -> np.ndarra
     if decimation <= 1 or n_strands <= 1:
         return np.arange(n_strands, dtype=np.int64)
     return np.arange(0, n_strands, decimation, dtype=np.int64)
+
+
+def _full_active_strands_from_guides(n_strands: int,
+                                     guide_indices: np.ndarray,
+                                     guide_active: np.ndarray,
+                                     guide_nearest: np.ndarray | None) -> np.ndarray:
+    active = np.zeros(int(n_strands), dtype=np.int32)
+    guide_active = np.asarray(guide_active, dtype=bool).reshape(-1)
+    guide_indices = np.asarray(guide_indices, dtype=np.int64).reshape(-1)
+    if guide_active.shape != guide_indices.shape:
+        raise ValueError(f"guide active shape mismatch: {guide_active.shape} != {guide_indices.shape}")
+    if np.any(guide_active):
+        active[guide_indices[guide_active]] = 1
+        if guide_nearest is not None:
+            nearest = np.asarray(guide_nearest, dtype=np.int64)
+            active[np.any(guide_active[nearest], axis=1)] = 1
+    return active
 
 
 def _guide_interpolation_weights(init_world: np.ndarray, pps: int,
@@ -1044,7 +1447,8 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
                              keep_fallback_dirs: np.ndarray | None = None,
                              body_hard_guard_obj=None,
                              body_hard_guard_margin: float = 0.0,
-                             body_hard_guard_seed=None) -> None:
+                             body_hard_guard_seed=None,
+                             body_fk_root_locked_points: int = 1) -> None:
     local_values = _local_values_from_world(
         curves_obj,
         frames,
@@ -1056,6 +1460,7 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
         body_hard_guard_obj=body_hard_guard_obj,
         body_hard_guard_margin=body_hard_guard_margin,
         body_hard_guard_seed=body_hard_guard_seed,
+        body_fk_root_locked_points=body_fk_root_locked_points,
     )
     _bake_local_position_keyframes(curves_obj, frames, local_values)
 
@@ -1069,6 +1474,7 @@ def _local_values_from_world(curves_obj, frames: list[int],
                              body_hard_guard_obj=None,
                              body_hard_guard_margin: float = 0.0,
                              body_hard_guard_seed=None,
+                             body_fk_root_locked_points: int = 1,
                              correction_passes: int = 3) -> np.ndarray:
     attr = curves_obj.data.attributes.get("position")
     if attr is None:
@@ -1106,12 +1512,33 @@ def _local_values_from_world(curves_obj, frames: list[int],
             _write_local_points(curves_obj, local)
             bpy.context.view_layer.update()
             eval_world, original_world = _read_world(curves_obj)
-            guarded, _fixed = _apply_body_seed_hard_guard(
-                eval_world,
-                body_hard_guard_obj,
-                body_hard_guard_margin,
-                body_hard_guard_seed,
-            )
+            if pps is not None:
+                guarded, fixed, guard_strands = _apply_body_seed_hard_guard(
+                    eval_world,
+                    body_hard_guard_obj,
+                    body_hard_guard_margin,
+                    body_hard_guard_seed,
+                    points_per_strand=int(pps),
+                )
+                if fixed and keep_rest_lengths is not None and keep_fallback_dirs is not None:
+                    guarded, _repair_stats, _repair_strands = _apply_body_fk_hard_repair(
+                        guarded,
+                        int(pps),
+                        keep_rest_lengths,
+                        keep_fallback_dirs,
+                        body_hard_guard_obj,
+                        body_hard_guard_margin,
+                        body_hard_guard_seed,
+                        root_locked_points=int(body_fk_root_locked_points),
+                        active_strands=guard_strands,
+                    )
+            else:
+                guarded, _fixed = _apply_body_seed_hard_guard(
+                    eval_world,
+                    body_hard_guard_obj,
+                    body_hard_guard_margin,
+                    body_hard_guard_seed,
+                )
             local = _world_to_local_points(
                 curves_obj,
                 guarded,
@@ -1209,7 +1636,8 @@ def _register_sim_cache(curves_obj, frames: list[int],
                         keep_fallback_dirs: np.ndarray | None = None,
                         body_hard_guard_obj=None,
                         body_hard_guard_margin: float = 0.0,
-                        body_hard_guard_seed=None) -> YuramekiRuntimeCache:
+                        body_hard_guard_seed=None,
+                        body_fk_root_locked_points: int = 1) -> YuramekiRuntimeCache:
     local_values = _local_values_from_world(
         curves_obj,
         frames,
@@ -1221,6 +1649,7 @@ def _register_sim_cache(curves_obj, frames: list[int],
         body_hard_guard_obj=body_hard_guard_obj,
         body_hard_guard_margin=body_hard_guard_margin,
         body_hard_guard_seed=body_hard_guard_seed,
+        body_fk_root_locked_points=body_fk_root_locked_points,
     )
     frame_array = np.asarray(frames, dtype=np.int32)
     path = _cache_file_path(curves_obj, int(frame_array[0]), int(frame_array[-1]))
@@ -1396,6 +1825,22 @@ class WarpJointSimulator:
         if rest.shape != (self.n_segments,):
             raise ValueError(f"keep rest length shape mismatch: {rest.shape} != {(self.n_segments,)}")
         self.keep_segment_rest.assign(rest)
+
+    def zero_strand_velocities(self, active_strands: np.ndarray) -> int:
+        active = np.ascontiguousarray(active_strands.astype(np.int32, copy=False).reshape(-1))
+        if active.shape != (self.n_strands,):
+            raise ValueError(f"zero velocity strand shape mismatch: {active.shape} != {(self.n_strands,)}")
+        if not np.any(active):
+            return 0
+        self.post_contact_strands.assign(active)
+        wp.launch(
+            _zero_contact_strand_velocity_kernel,
+            dim=self.n_total,
+            inputs=[self.vel, self.post_contact_strands, self.pps],
+            device=self.device,
+        )
+        wp.synchronize()
+        return int(np.count_nonzero(active) * self.pps)
 
     def _make_mesh(self, collider_objects, support_winding_number: bool = False) -> tuple[wp.Mesh, int, int]:
         vertices, indices = _evaluated_mesh_arrays(collider_objects)
@@ -1807,6 +2252,11 @@ def simulate(
     post_keep_hits_total = 0
     post_keep_active_strands_total = 0
     body_hard_guard_points_total = 0
+    body_fk_repair_strands_total = 0
+    body_fk_repair_points_total = 0
+    body_fk_escape_points_total = 0
+    body_fk_failed_points_total = 0
+    body_fk_velocity_zeroed_total = 0
     last_triangles = 0
     max_keep_length_error_mm = 0.0
     success = False
@@ -1836,6 +2286,7 @@ def simulate(
         guide_indices = _decimated_guide_indices(n_strands, guide_decimation)
         guide_point_indices = _guide_point_indices(guide_indices, pps)
         post_keep_contact_ttl = np.zeros(len(guide_indices), dtype=np.int32)
+        body_fk_contact_ttl = np.zeros(n_strands, dtype=np.int32)
         body_hard_guard_obj = collider_objects[0]
         body_hard_guard_seed = _head_seed_world(body_hard_guard_obj)
         guide_keep_rest_lengths = None
@@ -1854,6 +2305,7 @@ def simulate(
         if guide_keep_rest_lengths is not None:
             simulator.set_keep_rest_lengths(guide_keep_rest_lengths)
         prev_targets = sim_init.copy()
+        current_sim_world = sim_init.copy()
         current_world = init_eval.copy()
         if keep_rest_lengths is not None and keep_fallback_dirs is not None:
             current_world, keep_error = _keep_length_fk(
@@ -1866,14 +2318,43 @@ def simulate(
             current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
             simulator.set_positions(current_sim_world)
             prev_targets = current_sim_world.copy()
-        current_world, guard_fixed = _apply_body_seed_hard_guard(
+        current_world, guard_fixed, guard_strands = _apply_body_seed_hard_guard(
             current_world,
             body_hard_guard_obj,
             float(collision_margin_m),
             body_hard_guard_seed,
+            points_per_strand=pps,
         )
         body_hard_guard_points_total += guard_fixed
+        body_zero_strands = guard_strands.astype(np.int32, copy=True)
+        if keep_rest_lengths is not None and keep_fallback_dirs is not None:
+            initial_fk_active = np.ones(n_strands, dtype=np.int32)
+            current_world, fk_stats, fk_strands = _apply_body_fk_hard_repair(
+                current_world,
+                pps,
+                keep_rest_lengths,
+                keep_fallback_dirs,
+                body_hard_guard_obj,
+                float(collision_margin_m),
+                body_hard_guard_seed,
+                root_locked_points=locked,
+                active_strands=initial_fk_active,
+            )
+            if fk_stats.points:
+                body_fk_repair_strands_total += fk_stats.strands
+                body_fk_repair_points_total += fk_stats.points
+                body_fk_escape_points_total += fk_stats.escape_points
+                body_fk_failed_points_total += fk_stats.failed_points
+                body_fk_contact_ttl[fk_strands != 0] = BODY_FK_REPAIR_TTL_FRAMES
+                body_zero_strands |= fk_strands.astype(np.int32, copy=False)
+        if np.any(body_zero_strands):
+            guide_zero = body_zero_strands[guide_indices].astype(np.int32, copy=False)
+            body_fk_velocity_zeroed_total += simulator.zero_strand_velocities(guide_zero)
         if guard_fixed:
+            current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
+            simulator.set_positions(current_sim_world)
+            prev_targets = current_sim_world.copy()
+        elif keep_rest_lengths is not None and keep_fallback_dirs is not None and body_fk_repair_points_total:
             current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
             simulator.set_positions(current_sim_world)
             prev_targets = current_sim_world.copy()
@@ -1889,6 +2370,7 @@ def simulate(
             body_hard_guard_obj=body_hard_guard_obj,
             body_hard_guard_margin=float(collision_margin_m),
             body_hard_guard_seed=body_hard_guard_seed,
+            body_fk_root_locked_points=locked,
         )
         max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
 
@@ -1994,18 +2476,56 @@ def simulate(
                 keep_contacts = (contact_strands != 0) | (post_contacts != 0)
                 post_keep_contact_ttl = np.maximum(post_keep_contact_ttl - 1, 0)
                 post_keep_contact_ttl[keep_contacts] = POST_KEEP_CONTACT_TTL_FRAMES
-            current_world, guard_fixed = _apply_body_seed_hard_guard(
+                guide_active_for_fk = keep_contacts | (post_keep_contact_ttl > 0)
+            else:
+                guide_active_for_fk = contact_strands != 0
+            current_world, guard_fixed, guard_strands = _apply_body_seed_hard_guard(
                 current_world,
                 body_hard_guard_obj,
                 float(collision_margin_m),
                 body_hard_guard_seed,
+                points_per_strand=pps,
             )
             body_hard_guard_points_total += guard_fixed
-            if guard_fixed:
+            body_fk_points_this_frame = 0
+            body_zero_strands = guard_strands.astype(np.int32, copy=True)
+            if keep_rest_lengths is not None and keep_fallback_dirs is not None:
+                body_fk_active = _full_active_strands_from_guides(
+                    n_strands,
+                    guide_indices,
+                    guide_active_for_fk,
+                    guide_nearest,
+                )
+                body_fk_active |= guard_strands.astype(np.int32, copy=False)
+                body_fk_active |= (body_fk_contact_ttl > 0).astype(np.int32, copy=False)
+                body_fk_contact_ttl = np.maximum(body_fk_contact_ttl - 1, 0)
+                current_world, fk_stats, fk_strands = _apply_body_fk_hard_repair(
+                    current_world,
+                    pps,
+                    keep_rest_lengths,
+                    keep_fallback_dirs,
+                    body_hard_guard_obj,
+                    float(collision_margin_m),
+                    body_hard_guard_seed,
+                    root_locked_points=locked,
+                    active_strands=body_fk_active,
+                )
+                body_fk_points_this_frame = fk_stats.points
+                if fk_stats.points:
+                    body_fk_repair_strands_total += fk_stats.strands
+                    body_fk_repair_points_total += fk_stats.points
+                    body_fk_escape_points_total += fk_stats.escape_points
+                    body_fk_failed_points_total += fk_stats.failed_points
+                    body_fk_contact_ttl[fk_strands != 0] = BODY_FK_REPAIR_TTL_FRAMES
+                    body_zero_strands |= fk_strands.astype(np.int32, copy=False)
+            if np.any(body_zero_strands):
+                guide_zero = body_zero_strands[guide_indices].astype(np.int32, copy=False)
+                body_fk_velocity_zeroed_total += simulator.zero_strand_velocities(guide_zero)
+            if guard_fixed or body_fk_points_this_frame:
                 current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
                 simulator.set_positions(current_sim_world)
             total_hits += hits + post_hits
-            prev_targets = current_sim_world.copy() if (keep_length or guard_fixed) else eval_sim_world.copy()
+            prev_targets = current_sim_world.copy() if (keep_length or guard_fixed or body_fk_points_this_frame) else eval_sim_world.copy()
             baked[frame] = current_world.copy()
             show_error = _show_sim_frame(
                 curves_obj,
@@ -2018,6 +2538,7 @@ def simulate(
                 body_hard_guard_obj=body_hard_guard_obj,
                 body_hard_guard_margin=float(collision_margin_m),
                 body_hard_guard_seed=body_hard_guard_seed,
+                body_fk_root_locked_points=locked,
             )
             max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
 
@@ -2033,6 +2554,7 @@ def simulate(
                 body_hard_guard_obj=body_hard_guard_obj,
                 body_hard_guard_margin=float(collision_margin_m),
                 body_hard_guard_seed=body_hard_guard_seed,
+                body_fk_root_locked_points=locked,
             )
         elif bake_mode == "CACHE":
             cache = _register_sim_cache(
@@ -2046,6 +2568,7 @@ def simulate(
                 body_hard_guard_obj=body_hard_guard_obj,
                 body_hard_guard_margin=float(collision_margin_m),
                 body_hard_guard_seed=body_hard_guard_seed,
+                body_fk_root_locked_points=locked,
             )
             cache_path = cache.path
         else:
@@ -2057,6 +2580,10 @@ def simulate(
                 pps=pps,
                 keep_rest_lengths=keep_rest_lengths,
                 keep_fallback_dirs=keep_fallback_dirs,
+                body_hard_guard_obj=body_hard_guard_obj,
+                body_hard_guard_margin=float(collision_margin_m),
+                body_hard_guard_seed=body_hard_guard_seed,
+                body_fk_root_locked_points=locked,
             )
             max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
         success = True
@@ -2095,6 +2622,11 @@ def simulate(
         post_keep_collision_hits=post_keep_hits_total,
         post_keep_active_strands=post_keep_active_strands_total,
         body_hard_guard_points=body_hard_guard_points_total,
+        body_fk_repair_strands=body_fk_repair_strands_total,
+        body_fk_repair_points=body_fk_repair_points_total,
+        body_fk_escape_points=body_fk_escape_points_total,
+        body_fk_failed_points=body_fk_failed_points_total,
+        body_fk_velocity_zeroed=body_fk_velocity_zeroed_total,
         keep_length=bool(keep_length),
         keep_length_source_frame=1,
         max_keep_length_error_mm=max_keep_length_error_mm,

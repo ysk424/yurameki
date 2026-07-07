@@ -1,4 +1,4 @@
-# Yurameki 0.7.12
+# Yurameki 0.7.13
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -48,6 +48,11 @@ simulated rod directions but rebuilds all joints after point 0 by FK from the
 frame-1 segment lengths. The corrected result is used for live preview, cache
 playback, final preview, and keyframe baking, and the corrected guide state is
 fed back into the next frame.
+
+0.7.13 adds a Body FK hard repair pass after the seed hard guard. Active strands
+are reconstructed root-to-tip from their rest lengths; when a joint would remain
+inside the Body proxy, Yurameki searches from the XPBD direction toward the
+strand's straight continuation before falling back to a seed-ray escape point.
 
 ## Parameters
 

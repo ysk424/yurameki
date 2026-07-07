@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.7.12"
+version = "0.7.13"
 name = "Yurameki"
 tagline = "Yurameki (揺らめき) — NVIDIA Warp long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
@@ -24,5 +24,6 @@ paths = [
     "yurameki_defaults.json",
     "README.md",
     "DEVELOPMENT_NOTES.md",
+    "docs/body_proxy_hard_repair_plan.md",
     "LICENSE",
 ]
