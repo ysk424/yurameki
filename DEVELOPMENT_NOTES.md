@@ -39,6 +39,10 @@ active extension package.
 - The corrected guide/full strand positions are written back into the Warp
   simulator state after every frame so subsequent frames continue from the
   length-fixed result.
+- MCP validation on the Lumi test file with 6000 strands x 12 points, frames
+  1-2, `Guide Decimation=100`, and `KEEP LENGTH=on`: evaluated cache playback
+  had maximum absolute total-strand length difference of about `0.000203 mm`
+  versus frame 1, with zero strands over `0.001 mm`.
 
 ## 0.7.7 live frame preview
 

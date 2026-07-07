@@ -42,6 +42,13 @@ overwrites the Curves data, so every timeline frame will show that final shape.
 When you do bake keyframes, Yurameki writes the Curves `position` F-Curves
 directly in bulk instead of calling Blender's per-point keyframe operator.
 
+`KEEP LENGTH` is the default length-safety path. Frame 1 is treated as the rest
+shape for every strand segment. After each simulated frame, Yurameki keeps the
+simulated rod directions but rebuilds all joints after point 0 by FK from the
+frame-1 segment lengths. The corrected result is used for live preview, cache
+playback, final preview, and keyframe baking, and the corrected guide state is
+fed back into the next frame.
+
 ## Parameters
 
 - `Root Locked Points`: number of joints from the root constrained to the
@@ -104,3 +111,7 @@ Hair-hair collision is not implemented.
 The operator report includes the actual number of frame transitions and
 substeps, plus the selected CUDA device and SM architecture, for example
 `steps=23, substeps=207, cuda:0 sm_120`.
+
+The 0.7.8 MCP validation run used `KEEP LENGTH` on a 6000-strand / 12-point
+Curves test from frame 1 to frame 2. Evaluated viewport/cache playback lengths
+matched frame 1 with maximum absolute total-strand error below `0.001 mm`.
