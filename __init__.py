@@ -183,6 +183,7 @@ def _simulate(context):
             max_move_per_substep_m=float(wm.yurameki_auto_substep_mm) * 1.0e-3,
             max_substeps=int(wm.yurameki_max_substeps),
             bake_mode=wm.yurameki_sim_bake_mode,
+            guide_decimation=int(wm.yurameki_guide_decimation),
         )
     except ImportError as exc:
         return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
@@ -194,7 +195,8 @@ def _simulate(context):
         f"Simulate: frames={stats.start_frame}-{stats.end_frame}, "
         f"steps={stats.frame_steps}, substeps={stats.total_substeps} "
         f"(max {stats.max_substeps}), "
-        f"strands={stats.n_strands}, pps={stats.points_per_strand}, "
+        f"strands={stats.n_strands}, sim={stats.simulated_strands}, "
+        f"decim={stats.guide_decimation}, pps={stats.points_per_strand}, "
         f"locked={stats.root_locked_points}, "
         f"auto_move={stats.max_auto_move_mm:.3f}mm, "
         f"vmax={stats.max_velocity_mps:.2f}m/s, "
@@ -346,6 +348,7 @@ _PROP_NAMES = (
     "yurameki_post_collision_iterations",
     "yurameki_auto_substep_mm",
     "yurameki_max_substeps",
+    "yurameki_guide_decimation",
     "yurameki_sim_bake_mode",
 )
 
@@ -545,6 +548,14 @@ def register():
             default=int(defaults.get("MAX_SUBSTEPS", 16)),
             min=1,
             max=512,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_guide_decimation = IntProperty(
+            name="Guide Decimation",
+            description="Simulate one guide strand for every N strands, then interpolate the full cache",
+            default=int(defaults.get("GUIDE_DECIMATION", 1)),
+            min=1,
+            max=1000,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_sim_bake_mode = EnumProperty(

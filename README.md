@@ -1,4 +1,4 @@
-# Yurameki 0.7.5
+# Yurameki 0.7.6
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -45,6 +45,9 @@ directly in bulk instead of calling Blender's per-point keyframe operator.
 
 - `Root Locked Points`: number of joints from the root constrained to the
   evaluated pose.
+- `Guide Decimation`: simulate one guide strand for every N strands, then
+  interpolate the full Curves cache. `1` simulates all strands; `100` simulates
+  about one percent of the strands.
 - `Gravity m/s2`: Warp-style acceleration vector.
 - `Damping`: velocity damping after prediction.
 - `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.

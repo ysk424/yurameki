@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.5.
+Current version: 0.7.6.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,18 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.5`; no native DLL build is required.
+- Latest package target: source tree `0.7.6`; no native DLL build is required.
+
+## 0.7.6 guide decimation cache test
+
+- Added `Guide Decimation`. `1` keeps the previous all-strands simulation path;
+  `100` simulates one guide strand for every 100 strands.
+- Decimated simulation still uses the existing Warp solver. Only the input
+  strand set is reduced.
+- After each simulated frame, guide motion is converted back into a full Curves
+  cache by blending nearby guide deltas from root-position proximity. The
+  visible cache, preview playback, and `Bake Cache` path remain full strand
+  data.
 
 ## 0.7.5 UI unit cleanup
 

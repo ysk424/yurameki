@@ -2,6 +2,7 @@
     "SIM_START_FRAME": 1,
     "SIM_END_FRAME": 24,
     "SIM_BAKE_MODE": "CACHE",
+    "GUIDE_DECIMATION": 1,
     "ROOT_LOCKED_POINTS": 3,
     "GRAVITY": [0.0, 0.0, -9.81],
     "DAMPING": 0.08,

@@ -41,6 +41,8 @@ class WarpSimStats:
     end_frame: int
     n_frames: int
     n_strands: int
+    simulated_strands: int
+    guide_decimation: int
     points_per_strand: int
     root_locked_points: int
     frame_steps: int
@@ -559,6 +561,83 @@ def _inverse_mass(n_strands: int, pps: int, root_locked_points: int) -> np.ndarr
         base = strand * pps
         inv[base:base + locked] = 0.0
     return inv
+
+
+def _guide_point_indices(guide_indices: np.ndarray, pps: int) -> np.ndarray:
+    local = np.arange(int(pps), dtype=np.int64)
+    return (guide_indices.astype(np.int64)[:, None] * int(pps) + local[None, :]).reshape(-1)
+
+
+def _decimated_guide_indices(n_strands: int, guide_decimation: int) -> np.ndarray:
+    decimation = max(1, int(guide_decimation))
+    if decimation <= 1 or n_strands <= 1:
+        return np.arange(n_strands, dtype=np.int64)
+    return np.arange(0, n_strands, decimation, dtype=np.int64)
+
+
+def _guide_interpolation_weights(init_world: np.ndarray, pps: int,
+                                 guide_indices: np.ndarray,
+                                 max_guides: int = 4) -> tuple[np.ndarray, np.ndarray]:
+    n_strands = int(len(init_world) // pps)
+    guide_count = int(len(guide_indices))
+    if guide_count <= 0:
+        raise ValueError("Guide decimation left no strands to simulate")
+    k = max(1, min(int(max_guides), guide_count))
+    roots = init_world.reshape(n_strands, pps, 3)[:, 0, :]
+    guide_roots = roots[guide_indices]
+    nearest = np.empty((n_strands, k), dtype=np.int64)
+    weights = np.empty((n_strands, k), dtype=np.float32)
+    chunk_size = 4096
+    for start in range(0, n_strands, chunk_size):
+        end = min(start + chunk_size, n_strands)
+        d = roots[start:end, None, :] - guide_roots[None, :, :]
+        d2 = np.einsum("cgj,cgj->cg", d, d, optimize=True)
+        if k == guide_count:
+            order = np.argsort(d2, axis=1)[:, :k]
+        else:
+            part = np.argpartition(d2, k - 1, axis=1)[:, :k]
+            order = np.take_along_axis(
+                part,
+                np.argsort(np.take_along_axis(d2, part, axis=1), axis=1),
+                axis=1,
+            )
+        selected_d2 = np.take_along_axis(d2, order, axis=1)
+        near_weights = np.empty_like(selected_d2, dtype=np.float32)
+        exact = selected_d2[:, 0] <= 1.0e-14
+        if np.any(exact):
+            near_weights[exact] = 0.0
+            near_weights[exact, 0] = 1.0
+        if np.any(~exact):
+            inv = 1.0 / np.maximum(selected_d2[~exact], 1.0e-12)
+            near_weights[~exact] = (inv / np.sum(inv, axis=1, keepdims=True)).astype(np.float32)
+        nearest[start:end] = order
+        weights[start:end] = near_weights
+    for local_guide, strand_index in enumerate(guide_indices.tolist()):
+        nearest[int(strand_index), :] = local_guide
+        weights[int(strand_index), :] = 0.0
+        weights[int(strand_index), 0] = 1.0
+    return nearest, weights
+
+
+def _restore_decimated_strands(eval_world: np.ndarray,
+                               guide_eval_world: np.ndarray,
+                               guide_sim_world: np.ndarray,
+                               pps: int,
+                               nearest: np.ndarray,
+                               weights: np.ndarray) -> np.ndarray:
+    n_strands = int(len(eval_world) // pps)
+    eval_strands = eval_world.reshape(n_strands, pps, 3)
+    guide_count = int(len(guide_sim_world) // pps)
+    guide_delta = (
+        guide_sim_world.reshape(guide_count, pps, 3)
+        - guide_eval_world.reshape(guide_count, pps, 3)
+    )
+    blended_delta = np.sum(
+        guide_delta[nearest] * weights[:, :, None, None],
+        axis=1,
+        dtype=np.float32,
+    )
+    return np.ascontiguousarray((eval_strands + blended_delta).reshape(-1, 3), dtype=np.float32)
 
 
 def _target_motion_mm(prev_targets: np.ndarray, next_targets: np.ndarray,
@@ -1130,6 +1209,7 @@ def simulate(
     max_move_per_substep_m: float,
     max_substeps: int,
     bake_mode: str,
+    guide_decimation: int = 1,
 ) -> WarpSimStats:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
@@ -1142,6 +1222,7 @@ def simulate(
     bake_mode = str(bake_mode).strip().upper()
     if bake_mode not in {"CACHE", "FINAL", "KEYFRAMES"}:
         bake_mode = "CACHE"
+    guide_decimation = max(1, int(guide_decimation))
 
     scene = bpy.context.scene
     original_frame = int(scene.frame_current)
@@ -1166,8 +1247,19 @@ def simulate(
         locked = max(1, min(int(root_locked_points), pps))
         init_eval, init_original = _read_world(curves_obj)
         offset = init_eval - init_original
-        simulator = WarpJointSimulator(init_eval, pps, locked, particle_mass)
-        prev_targets = init_eval.copy()
+        guide_indices = _decimated_guide_indices(n_strands, guide_decimation)
+        guide_point_indices = _guide_point_indices(guide_indices, pps)
+        sim_init = np.ascontiguousarray(init_eval[guide_point_indices], dtype=np.float32)
+        guide_nearest = None
+        guide_weights = None
+        if len(guide_indices) != n_strands:
+            guide_nearest, guide_weights = _guide_interpolation_weights(
+                init_eval,
+                pps,
+                guide_indices,
+            )
+        simulator = WarpJointSimulator(sim_init, pps, locked, particle_mass)
+        prev_targets = sim_init.copy()
         current_world = init_eval.copy()
         offsets = {start_frame: offset}
         baked = {start_frame: current_world.copy()}
@@ -1177,7 +1269,8 @@ def simulate(
             scene.frame_set(frame)
             eval_world, original_world = _read_world(curves_obj)
             offsets[frame] = eval_world - original_world
-            target_move_mm = _target_motion_mm(prev_targets, eval_world, simulator.inv_mass_np)
+            eval_sim_world = np.ascontiguousarray(eval_world[guide_point_indices], dtype=np.float32)
+            target_move_mm = _target_motion_mm(prev_targets, eval_sim_world, simulator.inv_mass_np)
             inertial_move_mm = simulator.estimated_free_move_mm(dt_frame, gravity)
             move_mm = max(target_move_mm, inertial_move_mm)
             max_auto_move_mm = max(max_auto_move_mm, move_mm)
@@ -1192,12 +1285,13 @@ def simulate(
                 f"frame={frame}/{end_frame} "
                 f"substeps={substeps} "
                 f"auto_move_mm={move_mm:.3f} "
+                f"guides={len(guide_indices)}/{n_strands} "
                 f"device={simulator.device} "
                 f"arch=sm_{simulator.device_arch}"
             )
-            current_world, hits, last_triangles = simulator.simulate_frame(
+            current_sim_world, hits, last_triangles = simulator.simulate_frame(
                 prev_targets,
-                eval_world,
+                eval_sim_world,
                 collider_objects,
                 substeps,
                 dt_frame,
@@ -1215,8 +1309,19 @@ def simulate(
                 int(collision_passes),
                 int(post_collision_iterations),
             )
+            if guide_nearest is None or guide_weights is None:
+                current_world = current_sim_world.copy()
+            else:
+                current_world = _restore_decimated_strands(
+                    eval_world,
+                    eval_sim_world,
+                    current_sim_world,
+                    pps,
+                    guide_nearest,
+                    guide_weights,
+                )
             total_hits += hits
-            prev_targets = eval_world.copy()
+            prev_targets = eval_sim_world.copy()
             baked[frame] = current_world.copy()
 
         if bake_mode == "KEYFRAMES":
@@ -1238,6 +1343,8 @@ def simulate(
         end_frame=end_frame,
         n_frames=len(frames),
         n_strands=n_strands,
+        simulated_strands=int(len(guide_indices)),
+        guide_decimation=guide_decimation,
         points_per_strand=pps,
         root_locked_points=locked,
         frame_steps=frame_steps,
