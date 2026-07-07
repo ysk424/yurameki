@@ -18,6 +18,21 @@ def _version():
         return "?"
 
 
+def _label(layout, text: str) -> None:
+    layout.label(text=text, translate=False)
+
+
+def _prop(layout, wm, name: str) -> None:
+    layout.prop(wm, name, translate=False)
+
+
+def _operator(layout, op_id: str, *, text: str | None = None, icon: str = "NONE"):
+    kwargs = {"icon": icon, "translate": False}
+    if text is not None:
+        kwargs["text"] = text
+    return layout.operator(op_id, **kwargs)
+
+
 class YURAMEKI_PT_main(Panel):
     bl_idname = "YURAMEKI_PT_main"
     bl_label = "Yurameki"
@@ -29,62 +44,62 @@ class YURAMEKI_PT_main(Panel):
         layout = self.layout
         wm = context.window_manager
 
-        layout.label(text=f"Yurameki v{_version()}")
+        _label(layout, f"Yurameki v{_version()}")
         layout.separator(factor=0.4)
 
         box = layout.box()
-        box.label(text="Input")
+        _label(box, "Input")
         col = box.column(align=True)
         row = col.row(align=True)
-        row.prop(wm, "yurameki_curves_obj")
-        row.operator("yurameki.pick_curves", text="", icon="EYEDROPPER")
+        _prop(row, wm, "yurameki_curves_obj")
+        _operator(row, "yurameki.pick_curves", text="", icon="EYEDROPPER")
         row = col.row(align=True)
-        row.prop(wm, "yurameki_collider_obj")
-        row.operator("yurameki.pick_collider", text="", icon="EYEDROPPER")
+        _prop(row, wm, "yurameki_collider_obj")
+        _operator(row, "yurameki.pick_collider", text="", icon="EYEDROPPER")
         row = col.row(align=True)
-        row.prop(wm, "yurameki_clothes_obj")
-        row.operator("yurameki.pick_clothes", text="", icon="EYEDROPPER")
-        col.operator("yurameki.check_hair", icon="CHECKMARK")
-        col.prop(wm, "yurameki_points_per_strand")
+        _prop(row, wm, "yurameki_clothes_obj")
+        _operator(row, "yurameki.pick_clothes", text="", icon="EYEDROPPER")
+        _operator(col, "yurameki.check_hair", icon="CHECKMARK")
+        _prop(col, wm, "yurameki_points_per_strand")
         status = getattr(wm, "yurameki_hair_check_status", "")
         if status:
-            col.label(text=status)
+            _label(col, status)
 
         box = layout.box()
-        box.label(text="Simulate")
+        _label(box, "Simulate")
         col = box.column(align=True)
-        col.prop(wm, "yurameki_sim_start_frame")
-        col.prop(wm, "yurameki_sim_end_frame")
-        col.prop(wm, "yurameki_sim_bake_mode")
-        col.prop(wm, "yurameki_guide_decimation")
-        col.prop(wm, "yurameki_keep_length")
-        col.operator("yurameki.simulate", icon="RENDER_ANIMATION")
-        col.operator("yurameki.bake_cache", icon="ACTION")
+        _prop(col, wm, "yurameki_sim_start_frame")
+        _prop(col, wm, "yurameki_sim_end_frame")
+        _prop(col, wm, "yurameki_sim_bake_mode")
+        _prop(col, wm, "yurameki_guide_decimation")
+        _prop(col, wm, "yurameki_keep_length")
+        _operator(col, "yurameki.simulate", icon="RENDER_ANIMATION")
+        _operator(col, "yurameki.bake_cache", icon="ACTION")
 
         box = layout.box()
-        box.label(text="Warp")
+        _label(box, "Warp")
         col = box.column(align=True)
-        col.prop(wm, "yurameki_root_locked_points")
-        col.prop(wm, "yurameki_gravity")
-        col.prop(wm, "yurameki_damping")
-        col.prop(wm, "yurameki_max_velocity_mps")
-        col.prop(wm, "yurameki_particle_mass_g")
-        col.prop(wm, "yurameki_iterations")
-        col.prop(wm, "yurameki_stretch_compliance_log10")
-        col.prop(wm, "yurameki_bend_compliance_log10")
+        _prop(col, wm, "yurameki_root_locked_points")
+        _prop(col, wm, "yurameki_gravity")
+        _prop(col, wm, "yurameki_damping")
+        _prop(col, wm, "yurameki_max_velocity_mps")
+        _prop(col, wm, "yurameki_particle_mass_g")
+        _prop(col, wm, "yurameki_iterations")
+        _prop(col, wm, "yurameki_stretch_compliance_log10")
+        _prop(col, wm, "yurameki_bend_compliance_log10")
 
         box = layout.box()
-        box.label(text="Collision")
+        _label(box, "Collision")
         col = box.column(align=True)
-        col.prop(wm, "yurameki_collision_margin_mm")
-        col.prop(wm, "yurameki_collision_search_mm")
-        col.prop(wm, "yurameki_collision_max_correction_mm")
-        col.prop(wm, "yurameki_collision_response")
-        col.prop(wm, "yurameki_collision_velocity_damping")
-        col.prop(wm, "yurameki_collision_passes")
-        col.prop(wm, "yurameki_post_collision_iterations")
-        col.prop(wm, "yurameki_auto_substep_mm")
-        col.prop(wm, "yurameki_max_substeps")
+        _prop(col, wm, "yurameki_collision_margin_mm")
+        _prop(col, wm, "yurameki_collision_search_mm")
+        _prop(col, wm, "yurameki_collision_max_correction_mm")
+        _prop(col, wm, "yurameki_collision_response")
+        _prop(col, wm, "yurameki_collision_velocity_damping")
+        _prop(col, wm, "yurameki_collision_passes")
+        _prop(col, wm, "yurameki_post_collision_iterations")
+        _prop(col, wm, "yurameki_auto_substep_mm")
+        _prop(col, wm, "yurameki_max_substeps")
 
 
 _classes = (YURAMEKI_PT_main,)

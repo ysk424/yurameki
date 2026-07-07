@@ -693,6 +693,7 @@ def _force_viewport_refresh() -> None:
     if bpy.app.background:
         return
     try:
+        tagged = False
         for window in bpy.context.window_manager.windows:
             screen = window.screen
             if screen is None:
@@ -700,7 +701,12 @@ def _force_viewport_refresh() -> None:
             for area in screen.areas:
                 if area.type == "VIEW_3D":
                     area.tag_redraw()
-        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+                    tagged = True
+        if tagged:
+            try:
+                bpy.ops.wm.redraw_timer(type="DRAW_WIN", iterations=1)
+            except Exception:
+                bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
     except Exception:
         pass
 

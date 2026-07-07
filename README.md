@@ -1,9 +1,26 @@
-# Yurameki 0.7.13
+# Yurameki 0.7.14
 
-Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
+Yurameki is a Blender extension for simulating VR-character-style long straight
+hair with NVIDIA Warp.
 
 Tokoya owns planting, cutting, reset, and `Settle Hair Back`. Yurameki starts
 from that already-groomed Curves object and simulates motion only.
+
+Tokoya and Yurameki are designed as one workflow: Tokoya generates and prepares
+the hair, then Yurameki simulates it.
+
+## Installation
+
+- Blender 5.1 or newer. Current testing is on Blender 5.2 beta.
+- Windows x64.
+- NVIDIA CUDA-capable GPU.
+- Blender's Python environment must be able to import NVIDIA `warp-lang`.
+
+Install the release ZIP through Blender's extension/add-on installer:
+
+```text
+dist/yurameki-0.7.14.zip
+```
 
 ## Direction
 
@@ -34,13 +51,14 @@ The panel has two command buttons:
 
 Hair, Body, and Clothes are selected by eyedropper fields.
 
-`Output: Cache` is the default. It keeps simulation playback in a cache instead
-of immediately creating millions of Curves `position` F-Curves. `Keyframes`
-keeps the direct F-Curve bake path for final Blender-native animation output.
-`Final Preview` is only for a static look at the last simulated frame; it
-overwrites the Curves data, so every timeline frame will show that final shape.
-When you do bake keyframes, Yurameki writes the Curves `position` F-Curves
-directly in bulk instead of calling Blender's per-point keyframe operator.
+`Output: Runtime Cache` is the default. It keeps simulation playback in a cache
+instead of immediately creating millions of Curves `position` F-Curves.
+`Position Keyframes` keeps the direct F-Curve bake path for final Blender-native
+animation output. `Final Preview` is only for a static look at the last simulated
+frame; it overwrites the Curves data, so every timeline frame will show that
+final shape. When you do bake keyframes, Yurameki writes the Curves `position`
+F-Curves directly in bulk instead of calling Blender's per-point keyframe
+operator.
 
 `KEEP LENGTH` is the default length-safety path. Frame 1 is treated as the rest
 shape for every strand segment. After each simulated frame, Yurameki keeps the
@@ -70,8 +88,8 @@ strand's straight continuation before falling back to a seed-ray escape point.
 - `Damping`: velocity damping after prediction.
 - `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
 - `Particle Mass g`: mass used for inverse mass of free joints.
-- `Iterations`: distance/bend constraint iterations. The UI allows up to `256`
-  for stiff, aligned long hair tests.
+- `Iterations`: CUDA Warp distance/bend constraint iterations. The default is
+  `30` for stiff, aligned long hair tests, and the UI allows up to `256`.
 - `Stretch Compliance log10`: base-10 exponent for XPBD-style compliance of
   adjacent joint lengths. `-8` means `1e-8`.
 - `Bend Compliance log10`: base-10 exponent for XPBD-style compliance of
@@ -134,6 +152,15 @@ matched frame 1 with maximum absolute total-strand error below `0.001 mm`.
 
 ## Repository Notes
 
-The active extension package is Warp-only. The retired 0.6.x native CUDA
-cylinder-chain implementation is kept in Git history, not in the current source
-tree or build package.
+The release package is Warp-only. The retired 0.6.x native CUDA cylinder-chain
+implementation is kept in Git history, not in the current source tree or build
+package.
+
+## 0.7.14 Release
+
+- Public labels are English-only, even when Blender's UI language is Japanese.
+- `Iterations` defaults to `30` for stiff straight-hair tests.
+- Completed frames are shown in the viewport during simulation.
+- Yurameki Body proxy colliders are hidden in the viewport after creation or
+  reuse.
+- The 0.7.13 Body FK hard repair remains unchanged to avoid result drift.

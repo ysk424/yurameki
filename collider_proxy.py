@@ -130,6 +130,17 @@ def _remove_proxy_object(obj) -> None:
         bpy.data.meshes.remove(mesh)
 
 
+def _hide_proxy_for_viewport(proxy_obj) -> None:
+    proxy_obj.hide_render = True
+    proxy_obj.hide_select = True
+    proxy_obj.display_type = "WIRE"
+    proxy_obj.show_in_front = False
+    try:
+        proxy_obj.hide_set(True)
+    except Exception:
+        pass
+
+
 def clear_proxy(proxy_name: str) -> None:
     proxy = bpy.data.objects.get(proxy_name.strip()) if proxy_name else None
     if proxy is not None and bool(proxy.get(PROXY_FLAG, False)):
@@ -144,6 +155,7 @@ def get_valid_proxy(source_obj, proxy_name: str):
         and bool(proxy.get(PROXY_FLAG, False))
         and proxy.get(PROXY_SOURCE) == source_obj.name
     ):
+        _hide_proxy_for_viewport(proxy)
         return proxy
     return None
 
@@ -168,15 +180,13 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
     proxy.data.name = f"{proxy.name}_mesh"
     proxy[PROXY_FLAG] = True
     proxy[PROXY_SOURCE] = source_obj.name
-    proxy.hide_render = True
-    proxy.display_type = "WIRE"
-    proxy.show_in_front = True
 
     collections = tuple(source_obj.users_collection)
     if collections:
         collections[0].objects.link(proxy)
     else:
         bpy.context.scene.collection.objects.link(proxy)
+    _hide_proxy_for_viewport(proxy)
 
     ear_faces_removed = _remove_ear_protrusions(proxy)
     boundary_before, boundary_after, faces_added, cap_vertices_added = _cap_boundary_loops(proxy.data)

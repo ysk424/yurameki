@@ -1,14 +1,14 @@
-# Yurameki Warp Prototype Notes
+# Yurameki Warp Notes
 
-Status: active development fork.
+Status: public release.
 
-Current version: 0.7.13.
+Current version: 0.7.14.
 
 Branch: custom-cpp-cuda.
 
 Current direction: use NVIDIA Warp through its Python kernel, array, and Mesh
 query APIs. The native C++ CUDA cylinder-chain path is no longer part of the
-active extension package.
+release extension package.
 
 ## Current State
 
@@ -28,7 +28,23 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.13`; no native DLL build is required.
+- Latest package target: source tree `0.7.14`; no native DLL build is required.
+
+## 0.7.14 English manifest and CUDA iteration default
+
+- Removed the remaining Japanese text from the public manifest tagline.
+- Disabled UI translation for the Yurameki panel labels and property rows so
+  Blender's Japanese UI does not translate public labels such as Input, Hair,
+  Output, Runtime Cache, Warp, or Collision.
+- Raised the default `Iterations` value from `8` to `30` for straight-hair
+  stiffness tests. These distance/bend constraint iterations already run as
+  NVIDIA Warp CUDA kernels, so this increases the CUDA solver work without
+  changing the CPU Body FK hard repair algorithm.
+- Strengthened the per-frame viewport redraw used during simulation preview.
+- Body proxy collider objects are now hidden in the viewport after creation or
+  reuse while remaining available for collision evaluation.
+- The CPU Body FK hard repair and Blender ray-cast inside/outside reference path
+  are intentionally unchanged in this step to avoid introducing result drift.
 
 ## 0.7.13 Body FK hard repair
 
@@ -164,7 +180,7 @@ active extension package.
 
 ## 0.7.0 explosion-stability pass
 
-- Hair-hair collision is not active in the Warp prototype. Explosion observed
+- Hair-hair collision is not active in the Warp solver. Explosion observed
   after the first frame was not caused by self collision.
 - Body and Clothes collision are now split into separate Warp meshes. Body uses
   signed nearest-surface repair suitable for the filled proxy; Clothes use

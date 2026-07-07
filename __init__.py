@@ -471,7 +471,8 @@ def register():
         )
         WindowManager.yurameki_iterations = IntProperty(
             name="Iterations",
-            default=int(defaults.get("ITERATIONS", 8)),
+            description="CUDA Warp distance/bend constraint iterations",
+            default=int(defaults.get("ITERATIONS", 30)),
             min=1,
             max=256,
             options={"SKIP_SAVE"},
@@ -578,8 +579,8 @@ def register():
         WindowManager.yurameki_sim_bake_mode = EnumProperty(
             name="Output",
             items=(
-                ("CACHE", "Cache", "Store simulated frames in the Yurameki runtime cache for preview playback"),
-                ("KEYFRAMES", "Keyframes", "Bake every simulated frame as Curves position keyframes"),
+                ("CACHE", "Runtime Cache", "Store simulated frames in the Yurameki runtime cache for preview playback"),
+                ("KEYFRAMES", "Position Keyframes", "Bake every simulated frame as Curves position keyframes"),
                 ("FINAL", "Final Preview", "Write only the final simulated frame as a static preview"),
             ),
             default=str(defaults.get("SIM_BAKE_MODE", "CACHE")),
