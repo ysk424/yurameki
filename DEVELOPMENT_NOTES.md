@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.8.
+Current version: 0.7.9.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,25 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.8`; no native DLL build is required.
+- Latest package target: source tree `0.7.9`; no native DLL build is required.
+
+## 0.7.9 post-KEEP collision projection
+
+- Existing Warp collision now records the guide strands that touched Body or
+  Clothes during each simulated frame. The record is a compact strand mask, not
+  a triangle scan.
+- After `KEEP LENGTH` rebuilds rods from frame-1 segment lengths, active guide
+  strands are run through a post-KEEP collision projection. One GPU thread walks
+  one strand sequentially, queries the Warp Mesh BVH for each rod segment, and
+  rotates the rod tip while preserving the segment length.
+- A short contact TTL keeps recently touched strands active for a few frames, so
+  continuing shoulder/body contact does not need a fresh broad collision hit on
+  every frame.
+- The post-KEEP pass uses the existing Body signed query and Clothes two-sided
+  query, shares the existing correction clamp/response settings, and zeroes
+  velocity on strands it actually corrects.
+- No all-hair/all-triangle brute force pass is added. Inactive strands only pay
+  a cheap mask check in the post-KEEP kernel.
 
 ## 0.7.8 keep length FK
 

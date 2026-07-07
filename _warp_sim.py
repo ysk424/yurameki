@@ -56,6 +56,8 @@ class WarpSimStats:
     collision_max_correction_mm: float
     collision_response: float
     collision_velocity_damping: float
+    post_keep_collision_hits: int
+    post_keep_active_strands: int
     keep_length: bool
     keep_length_source_frame: int
     max_keep_length_error_mm: float
@@ -89,6 +91,15 @@ class YuramekiRuntimeCache:
 
 _CACHE_REGISTRY: dict[str, YuramekiRuntimeCache] = {}
 _CACHE_MUTED = False
+POST_KEEP_CONTACT_TTL_FRAMES = 3
+
+
+@wp.func
+def _normalize_or(v: wp.vec3, fallback: wp.vec3):
+    length = wp.length(v)
+    if length > 1.0e-9:
+        return v / length
+    return fallback
 
 
 @wp.kernel
@@ -259,12 +270,14 @@ def _body_point_collision_kernel(
     predicted: wp.array(dtype=wp.vec3),
     velocities: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
+    points_per_strand: int,
     margin: float,
     search_distance: float,
     max_correction: float,
     collision_response: float,
     allow_sweep: int,
     contact_mask: wp.array(dtype=wp.int32),
+    frame_contact_strands: wp.array(dtype=wp.int32),
     hit_count: wp.array(dtype=wp.int32),
 ):
     i = wp.tid()
@@ -314,6 +327,7 @@ def _body_point_collision_kernel(
 
     if contacted == 1:
         contact_mask[i] = 1
+        frame_contact_strands[i // points_per_strand] = 1
         velocity = velocities[i]
         normal_speed = wp.dot(velocity, normal)
         if normal_speed < 0.0:
@@ -329,12 +343,14 @@ def _cloth_point_collision_kernel(
     predicted: wp.array(dtype=wp.vec3),
     velocities: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
+    points_per_strand: int,
     margin: float,
     search_distance: float,
     max_correction: float,
     collision_response: float,
     allow_sweep: int,
     contact_mask: wp.array(dtype=wp.int32),
+    frame_contact_strands: wp.array(dtype=wp.int32),
     hit_count: wp.array(dtype=wp.int32),
 ):
     i = wp.tid()
@@ -384,6 +400,7 @@ def _cloth_point_collision_kernel(
 
     if contacted == 1:
         contact_mask[i] = 1
+        frame_contact_strands[i // points_per_strand] = 1
         velocity = velocities[i]
         normal_speed = wp.dot(velocity, normal)
         if normal_speed < 0.0:
@@ -404,6 +421,7 @@ def _segment_collision_kernel(
     collision_response: float,
     parity: int,
     contact_mask: wp.array(dtype=wp.int32),
+    frame_contact_strands: wp.array(dtype=wp.int32),
     hit_count: wp.array(dtype=wp.int32),
 ):
     segment_id = wp.tid()
@@ -439,11 +457,173 @@ def _segment_collision_kernel(
     if inv_mass[j] > 0.0:
         predicted[j] = p1 + correction * collision_response
         contact_mask[j] = 1
+        frame_contact_strands[strand] = 1
         velocity = velocities[j]
         normal_speed = wp.dot(velocity, normal)
         if normal_speed < 0.0:
             velocities[j] = velocity - normal * normal_speed
         wp.atomic_add(hit_count, 0, 1)
+
+
+@wp.kernel
+def _post_keep_body_collision_kernel(
+    mesh: wp.uint64,
+    positions: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+    active_strands: wp.array(dtype=wp.int32),
+    rest: wp.array(dtype=float),
+    points_per_strand: int,
+    margin: float,
+    search_distance: float,
+    max_correction: float,
+    collision_response: float,
+    contact_strands: wp.array(dtype=wp.int32),
+    hit_count: wp.array(dtype=wp.int32),
+):
+    strand = wp.tid()
+    if active_strands[strand] == 0:
+        return
+
+    segments_per_strand = int(points_per_strand - 1)
+    local = int(0)
+    while local < segments_per_strand:
+        i = strand * points_per_strand + local
+        j = i + 1
+        if inv_mass[j] > 0.0:
+            p0 = positions[i]
+            p1 = positions[j]
+            rest_length = rest[strand * segments_per_strand + local]
+            if rest_length > 1.0e-8:
+                direction = _normalize_or(p1 - p0, wp.vec3(0.0, 0.0, -1.0))
+                p1 = p0 + direction * rest_length
+                contacted = int(0)
+
+                ray = wp.mesh_query_ray(mesh, p0, direction, rest_length)
+                if ray.result and ray.t > 1.0e-6 and ray.t < rest_length - 1.0e-6:
+                    normal = ray.normal
+                    if wp.dot(direction, normal) > 0.0:
+                        normal = -normal
+                    target = p0 + direction * ray.t + normal * margin
+                    correction = target - p1
+                    correction_length = wp.length(correction)
+                    if correction_length > max_correction and correction_length > 1.0e-9:
+                        correction = correction / correction_length * max_correction
+                    candidate = p1 + correction * collision_response
+                    direction = _normalize_or(candidate - p0, direction)
+                    p1 = p0 + direction * rest_length
+                    contacted = int(1)
+
+                query = wp.mesh_query_point_sign_normal(mesh, p1, search_distance, 1.0e-3)
+                if query.result:
+                    closest = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
+                    surface_delta = p1 - closest
+                    unsigned_distance = wp.length(surface_delta)
+                    signed_distance = unsigned_distance * query.sign
+                    error = signed_distance - margin
+                    if error < 0.0:
+                        if unsigned_distance > 1.0e-9:
+                            normal = wp.normalize(surface_delta) * query.sign
+                        else:
+                            normal = wp.mesh_eval_face_normal(mesh, query.face)
+                        correction = -normal * error
+                        correction_length = wp.length(correction)
+                        if correction_length > max_correction and correction_length > 1.0e-9:
+                            correction = correction / correction_length * max_correction
+                        candidate = p1 + correction * collision_response
+                        direction = _normalize_or(candidate - p0, direction)
+                        p1 = p0 + direction * rest_length
+                        contacted = int(1)
+
+                positions[j] = p1
+                if contacted == 1:
+                    contact_strands[strand] = 1
+                    wp.atomic_add(hit_count, 0, 1)
+        local += 1
+
+
+@wp.kernel
+def _post_keep_cloth_collision_kernel(
+    mesh: wp.uint64,
+    positions: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+    active_strands: wp.array(dtype=wp.int32),
+    rest: wp.array(dtype=float),
+    points_per_strand: int,
+    margin: float,
+    search_distance: float,
+    max_correction: float,
+    collision_response: float,
+    contact_strands: wp.array(dtype=wp.int32),
+    hit_count: wp.array(dtype=wp.int32),
+):
+    strand = wp.tid()
+    if active_strands[strand] == 0:
+        return
+
+    segments_per_strand = int(points_per_strand - 1)
+    local = int(0)
+    while local < segments_per_strand:
+        i = strand * points_per_strand + local
+        j = i + 1
+        if inv_mass[j] > 0.0:
+            p0 = positions[i]
+            p1 = positions[j]
+            rest_length = rest[strand * segments_per_strand + local]
+            if rest_length > 1.0e-8:
+                direction = _normalize_or(p1 - p0, wp.vec3(0.0, 0.0, -1.0))
+                p1 = p0 + direction * rest_length
+                contacted = int(0)
+
+                ray = wp.mesh_query_ray(mesh, p0, direction, rest_length)
+                if ray.result and ray.t > 1.0e-6 and ray.t < rest_length - 1.0e-6:
+                    normal = ray.normal
+                    if wp.dot(direction, normal) > 0.0:
+                        normal = -normal
+                    target = p0 + direction * ray.t + normal * margin
+                    correction = target - p1
+                    correction_length = wp.length(correction)
+                    if correction_length > max_correction and correction_length > 1.0e-9:
+                        correction = correction / correction_length * max_correction
+                    candidate = p1 + correction * collision_response
+                    direction = _normalize_or(candidate - p0, direction)
+                    p1 = p0 + direction * rest_length
+                    contacted = int(1)
+
+                query = wp.mesh_query_point_no_sign(mesh, p1, search_distance)
+                if query.result:
+                    closest = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
+                    surface_delta = p1 - closest
+                    unsigned_distance = wp.length(surface_delta)
+                    if unsigned_distance < margin:
+                        normal = wp.mesh_eval_face_normal(mesh, query.face)
+                        if unsigned_distance > 1.0e-9 and wp.dot(surface_delta, normal) < 0.0:
+                            normal = -normal
+                        target = closest + normal * margin
+                        correction = target - p1
+                        correction_length = wp.length(correction)
+                        if correction_length > max_correction and correction_length > 1.0e-9:
+                            correction = correction / correction_length * max_correction
+                        candidate = p1 + correction * collision_response
+                        direction = _normalize_or(candidate - p0, direction)
+                        p1 = p0 + direction * rest_length
+                        contacted = int(1)
+
+                positions[j] = p1
+                if contacted == 1:
+                    contact_strands[strand] = 1
+                    wp.atomic_add(hit_count, 0, 1)
+        local += 1
+
+
+@wp.kernel
+def _zero_contact_strand_velocity_kernel(
+    velocities: wp.array(dtype=wp.vec3),
+    contact_strands: wp.array(dtype=wp.int32),
+    points_per_strand: int,
+):
+    i = wp.tid()
+    if contact_strands[i // points_per_strand] != 0:
+        velocities[i] = wp.vec3(0.0, 0.0, 0.0)
 
 
 def _curve_spans(curves_obj):
@@ -1059,7 +1239,12 @@ class WarpJointSimulator:
         self.segment_rest = wp.array(self.seg_rest_np, dtype=float, device=self.device)
         self.bend_rest = wp.array(self.bend_rest_np, dtype=float, device=self.device)
         self.contact_mask = wp.zeros(self.n_total, dtype=wp.int32, device=self.device)
+        self.frame_contact_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
+        self.post_active_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
+        self.post_contact_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
+        self.keep_segment_rest = wp.array(self.seg_rest_np, dtype=float, device=self.device)
         self.hit_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._last_meshes: ColliderMeshSet | None = None
 
     def set_targets(self, start: np.ndarray, end: np.ndarray) -> None:
         self.target_start.assign(np.ascontiguousarray(start, dtype=np.float32))
@@ -1071,6 +1256,12 @@ class WarpJointSimulator:
             raise ValueError(f"position shape mismatch: {positions.shape} != {(self.n_total, 3)}")
         self.pos.assign(positions)
         self.predicted.assign(positions)
+
+    def set_keep_rest_lengths(self, rest_lengths: np.ndarray) -> None:
+        rest = np.ascontiguousarray(rest_lengths.reshape(-1), dtype=np.float32)
+        if rest.shape != (self.n_segments,):
+            raise ValueError(f"keep rest length shape mismatch: {rest.shape} != {(self.n_segments,)}")
+        self.keep_segment_rest.assign(rest)
 
     def _make_mesh(self, collider_objects, support_winding_number: bool = False) -> tuple[wp.Mesh, int, int]:
         vertices, indices = _evaluated_mesh_arrays(collider_objects)
@@ -1159,12 +1350,14 @@ class WarpJointSimulator:
                     self.predicted,
                     self.vel,
                     self.inv_mass,
+                    self.pps,
                     float(margin),
                     float(search_distance),
                     max_correction,
                     collision_response,
                     int(bool(allow_sweep)),
                     self.contact_mask,
+                    self.frame_contact_strands,
                     self.hit_count,
                 ],
                 device=self.device,
@@ -1179,12 +1372,14 @@ class WarpJointSimulator:
                     self.predicted,
                     self.vel,
                     self.inv_mass,
+                    self.pps,
                     float(margin),
                     float(search_distance),
                     max_correction,
                     collision_response,
                     int(bool(allow_sweep)),
                     self.contact_mask,
+                    self.frame_contact_strands,
                     self.hit_count,
                 ],
                 device=self.device,
@@ -1206,6 +1401,7 @@ class WarpJointSimulator:
                             collision_response,
                             parity,
                             self.contact_mask,
+                            self.frame_contact_strands,
                             self.hit_count,
                         ],
                         device=self.device,
@@ -1225,10 +1421,89 @@ class WarpJointSimulator:
                             collision_response,
                             parity,
                             self.contact_mask,
+                            self.frame_contact_strands,
                             self.hit_count,
                         ],
                         device=self.device,
                     )
+
+    def post_keep_length_collision(
+        self,
+        active_strands: np.ndarray,
+        margin: float,
+        search_distance: float,
+        max_correction: float,
+        collision_response: float,
+        passes: int,
+    ) -> tuple[np.ndarray, int, np.ndarray]:
+        meshes = self._last_meshes
+        if meshes is None:
+            return self.pos.numpy().astype(np.float32, copy=True), 0, np.zeros(self.n_strands, dtype=np.int32)
+
+        active = np.ascontiguousarray(active_strands.astype(np.int32, copy=False).reshape(-1))
+        if active.shape != (self.n_strands,):
+            raise ValueError(f"active strand shape mismatch: {active.shape} != {(self.n_strands,)}")
+        if not np.any(active):
+            return self.pos.numpy().astype(np.float32, copy=True), 0, np.zeros(self.n_strands, dtype=np.int32)
+
+        max_correction = max(float(max_correction), 1.0e-6)
+        collision_response = min(max(float(collision_response), 0.0), 1.0)
+        self.post_active_strands.assign(active)
+        wp.launch(_clear_contact_mask_kernel, dim=self.n_strands, inputs=[self.post_contact_strands], device=self.device)
+        self.hit_count.assign(np.zeros(1, dtype=np.int32))
+
+        for _ in range(max(1, int(passes))):
+            if meshes.body is not None:
+                wp.launch(
+                    _post_keep_body_collision_kernel,
+                    dim=self.n_strands,
+                    inputs=[
+                        meshes.body.id,
+                        self.pos,
+                        self.inv_mass,
+                        self.post_active_strands,
+                        self.keep_segment_rest,
+                        self.pps,
+                        float(margin),
+                        float(search_distance),
+                        max_correction,
+                        collision_response,
+                        self.post_contact_strands,
+                        self.hit_count,
+                    ],
+                    device=self.device,
+                )
+            if meshes.clothes is not None:
+                wp.launch(
+                    _post_keep_cloth_collision_kernel,
+                    dim=self.n_strands,
+                    inputs=[
+                        meshes.clothes.id,
+                        self.pos,
+                        self.inv_mass,
+                        self.post_active_strands,
+                        self.keep_segment_rest,
+                        self.pps,
+                        float(margin),
+                        float(search_distance),
+                        max_correction,
+                        collision_response,
+                        self.post_contact_strands,
+                        self.hit_count,
+                    ],
+                    device=self.device,
+                )
+
+        wp.launch(
+            _zero_contact_strand_velocity_kernel,
+            dim=self.n_total,
+            inputs=[self.vel, self.post_contact_strands, self.pps],
+            device=self.device,
+        )
+        wp.synchronize()
+        hits = int(self.hit_count.numpy()[0])
+        contacts = self.post_contact_strands.numpy().astype(np.int32, copy=True)
+        return self.pos.numpy().astype(np.float32, copy=True), hits, contacts
 
     def simulate_frame(
         self,
@@ -1250,10 +1525,17 @@ class WarpJointSimulator:
         collision_velocity_damping: float,
         collision_passes: int,
         post_collision_iterations: int,
-    ) -> tuple[np.ndarray, int, int]:
+    ) -> tuple[np.ndarray, int, int, np.ndarray]:
         meshes = self.make_meshes(collider_objects)
+        self._last_meshes = meshes
         self.set_targets(target_start, target_end)
         self.hit_count.assign(np.zeros(1, dtype=np.int32))
+        wp.launch(
+            _clear_contact_mask_kernel,
+            dim=self.n_strands,
+            inputs=[self.frame_contact_strands],
+            device=self.device,
+        )
         substeps = max(1, int(substeps))
         dt = float(dt_frame) / float(substeps)
         for step in range(substeps):
@@ -1311,7 +1593,8 @@ class WarpJointSimulator:
             wp.launch(_commit_kernel, dim=self.n_total, inputs=[self.pos, self.predicted], device=self.device)
         wp.synchronize()
         hits = int(self.hit_count.numpy()[0])
-        return self.pos.numpy().astype(np.float32, copy=True), hits, meshes.n_triangles
+        contact_strands = self.frame_contact_strands.numpy().astype(np.int32, copy=True)
+        return self.pos.numpy().astype(np.float32, copy=True), hits, meshes.n_triangles, contact_strands
 
 
 def check_warp_ready(curves_obj, collider_objects, root_locked_points: int,
@@ -1387,6 +1670,8 @@ def simulate(
     total_substeps = 0
     max_auto_move_mm = 0.0
     total_hits = 0
+    post_keep_hits_total = 0
+    post_keep_active_strands_total = 0
     last_triangles = 0
     max_keep_length_error_mm = 0.0
     success = False
@@ -1415,6 +1700,10 @@ def simulate(
             )
         guide_indices = _decimated_guide_indices(n_strands, guide_decimation)
         guide_point_indices = _guide_point_indices(guide_indices, pps)
+        post_keep_contact_ttl = np.zeros(len(guide_indices), dtype=np.int32)
+        guide_keep_rest_lengths = None
+        if keep_rest_lengths is not None:
+            guide_keep_rest_lengths = np.ascontiguousarray(keep_rest_lengths[guide_indices], dtype=np.float32)
         sim_init = np.ascontiguousarray(init_eval[guide_point_indices], dtype=np.float32)
         guide_nearest = None
         guide_weights = None
@@ -1425,6 +1714,8 @@ def simulate(
                 guide_indices,
             )
         simulator = WarpJointSimulator(sim_init, pps, locked, particle_mass)
+        if guide_keep_rest_lengths is not None:
+            simulator.set_keep_rest_lengths(guide_keep_rest_lengths)
         prev_targets = sim_init.copy()
         current_world = init_eval.copy()
         if keep_rest_lengths is not None and keep_fallback_dirs is not None:
@@ -1474,7 +1765,7 @@ def simulate(
                 f"device={simulator.device} "
                 f"arch=sm_{simulator.device_arch}"
             )
-            current_sim_world, hits, last_triangles = simulator.simulate_frame(
+            current_sim_world, hits, last_triangles, contact_strands = simulator.simulate_frame(
                 prev_targets,
                 eval_sim_world,
                 collider_objects,
@@ -1494,6 +1785,8 @@ def simulate(
                 int(collision_passes),
                 int(post_collision_iterations),
             )
+            post_hits = 0
+            post_contacts = np.zeros_like(contact_strands)
             if guide_nearest is None or guide_weights is None:
                 current_world = current_sim_world.copy()
             else:
@@ -1515,7 +1808,42 @@ def simulate(
                 max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
                 current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
                 simulator.set_positions(current_sim_world)
-            total_hits += hits
+                active_strands = (contact_strands != 0) | (post_keep_contact_ttl > 0)
+                if guide_keep_rest_lengths is not None and np.any(active_strands):
+                    post_keep_active_strands_total += int(np.count_nonzero(active_strands))
+                    current_sim_world, post_hits, post_contacts = simulator.post_keep_length_collision(
+                        active_strands.astype(np.int32, copy=False),
+                        float(collision_margin_m),
+                        float(collision_search_m),
+                        float(collision_max_correction_m),
+                        float(collision_response),
+                        max(1, int(post_collision_iterations)),
+                    )
+                    post_keep_hits_total += post_hits
+                    if guide_nearest is None or guide_weights is None:
+                        current_world = current_sim_world.copy()
+                    else:
+                        current_world = _restore_decimated_strands(
+                            eval_world,
+                            eval_sim_world,
+                            current_sim_world,
+                            pps,
+                            guide_nearest,
+                            guide_weights,
+                        )
+                        current_world, keep_error = _keep_length_fk(
+                            current_world,
+                            pps,
+                            keep_rest_lengths,
+                            keep_fallback_dirs,
+                        )
+                        max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
+                        current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
+                        simulator.set_positions(current_sim_world)
+                keep_contacts = (contact_strands != 0) | (post_contacts != 0)
+                post_keep_contact_ttl = np.maximum(post_keep_contact_ttl - 1, 0)
+                post_keep_contact_ttl[keep_contacts] = POST_KEEP_CONTACT_TTL_FRAMES
+            total_hits += hits + post_hits
             prev_targets = current_sim_world.copy() if keep_length else eval_sim_world.copy()
             baked[frame] = current_world.copy()
             show_error = _show_sim_frame(
@@ -1594,6 +1922,8 @@ def simulate(
         collision_max_correction_mm=float(collision_max_correction_m) * 1000.0,
         collision_response=min(max(float(collision_response), 0.0), 1.0),
         collision_velocity_damping=min(max(float(collision_velocity_damping), 0.0), 1.0),
+        post_keep_collision_hits=post_keep_hits_total,
+        post_keep_active_strands=post_keep_active_strands_total,
         keep_length=bool(keep_length),
         keep_length_source_frame=1,
         max_keep_length_error_mm=max_keep_length_error_mm,

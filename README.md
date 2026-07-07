@@ -1,4 +1,4 @@
-# Yurameki 0.7.8
+# Yurameki 0.7.9
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -103,6 +103,10 @@ Collision uses Warp Mesh ray and nearest-point queries. Body and Clothes are
 kept as separate Warp meshes: Body uses signed nearest-surface push-out, Clothes
 uses two-sided unsigned push-out. Segment collision corrections are clamped so a
 long strand cannot teleport an endpoint across the character in one pass.
+When `KEEP LENGTH` is enabled, Yurameki records contact strands during the Warp
+collision step and runs a post-KEEP collision projection on those active strands
+plus short-lived contact history. This preserves rod lengths while avoiding a
+full strand/triangle brute-force pass after FK length restoration.
 Collision-corrected points are marked on the GPU and their derived velocity is
 zeroed by default, so collider repair does not become rebound energy on the next
 substep.

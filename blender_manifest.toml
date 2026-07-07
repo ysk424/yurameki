@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "0.7.8"
+version = "0.7.9"
 name = "Yurameki"
 tagline = "Yurameki (揺らめき) — NVIDIA Warp long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
