@@ -1,7 +1,7 @@
 """Collider proxy helpers for Yurameki.
 
 The proxy keeps the source object's modifiers, but uses a private mesh copy with
-boundary holes filled so parity checks can treat the body as closed.
+boundary holes capped so parity checks can treat the body as closed.
 """
 
 from __future__ import annotations
@@ -28,22 +28,72 @@ def _mesh_boundary_count(mesh) -> int:
         bm.free()
 
 
-def _fill_boundary_holes(mesh) -> tuple[int, int, int]:
+def _ordered_boundary_loop(start_edge, remaining_edges: set) -> list:
+    if start_edge not in remaining_edges:
+        return []
+    remaining_edges.remove(start_edge)
+    start_vert = start_edge.verts[0]
+    current_vert = start_edge.verts[1]
+    previous_edge = start_edge
+    verts = [start_vert, current_vert]
+
+    while current_vert is not start_vert:
+        next_edge = None
+        for edge in current_vert.link_edges:
+            if edge is previous_edge or edge not in remaining_edges or not edge.is_boundary:
+                continue
+            next_edge = edge
+            break
+        if next_edge is None:
+            break
+        remaining_edges.remove(next_edge)
+        next_vert = next_edge.verts[1] if next_edge.verts[0] is current_vert else next_edge.verts[0]
+        if next_vert is start_vert:
+            break
+        verts.append(next_vert)
+        previous_edge = next_edge
+        current_vert = next_vert
+    return verts
+
+
+def _cap_boundary_loops(mesh) -> tuple[int, int, int, int]:
     bm = bmesh.new()
     try:
         bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
+        verts_before = len(bm.verts)
         faces_before = len(bm.faces)
         boundary_edges = [edge for edge in bm.edges if edge.is_boundary]
         boundary_before = len(boundary_edges)
-        if boundary_edges:
-            bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+        loops_filled = 0
+        remaining = set(boundary_edges)
+        while remaining:
+            loop = _ordered_boundary_loop(next(iter(remaining)), remaining)
+            if len(loop) < 3:
+                continue
+            center = sum((vert.co for vert in loop), loop[0].co.copy() * 0.0) / float(len(loop))
+            center_vert = bm.verts.new(center)
+            loops_filled += 1
+            for index, vert in enumerate(loop):
+                next_vert = loop[(index + 1) % len(loop)]
+                try:
+                    bm.faces.new((vert, next_vert, center_vert))
+                except ValueError:
+                    pass
+        if loops_filled:
+            bm.verts.ensure_lookup_table()
+            bm.edges.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+            bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
             bm.normal_update()
             bm.to_mesh(mesh)
             mesh.update()
         faces_after = len(bm.faces)
+        verts_after = len(bm.verts)
         boundary_after = sum(1 for edge in bm.edges if edge.is_boundary)
-        return boundary_before, boundary_after, faces_after - faces_before
+        return boundary_before, boundary_after, faces_after - faces_before, verts_after - verts_before
     finally:
         bm.free()
 
@@ -129,7 +179,7 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
         bpy.context.scene.collection.objects.link(proxy)
 
     ear_faces_removed = _remove_ear_protrusions(proxy)
-    boundary_before, boundary_after, faces_added = _fill_boundary_holes(proxy.data)
+    boundary_before, boundary_after, faces_added, cap_vertices_added = _cap_boundary_loops(proxy.data)
     bpy.context.view_layer.update()
 
     return {
@@ -138,6 +188,7 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
         "boundary_edges_before": int(boundary_before),
         "boundary_edges_after": int(boundary_after),
         "faces_added": int(faces_added),
+        "cap_vertices_added": int(cap_vertices_added),
         "ear_faces_removed": int(ear_faces_removed),
         "modifiers": len(proxy.modifiers),
     }

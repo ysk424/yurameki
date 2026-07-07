@@ -138,7 +138,8 @@ def _check_hair(context):
     if proxy_stats is not None:
         proxy_text = (
             f"created {proxy_stats['proxy_name']} "
-            f"filled={proxy_stats['faces_added']} boundary={proxy_stats['boundary_edges_after']}"
+            f"filled={proxy_stats['faces_added']} capv={proxy_stats.get('cap_vertices_added', 0)} "
+            f"boundary={proxy_stats['boundary_edges_after']}"
         )
     clothes = _source_clothes_collider(context)
     return (

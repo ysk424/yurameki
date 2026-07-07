@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.9.
+Current version: 0.7.11.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,29 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.9`; no native DLL build is required.
+- Latest package target: source tree `0.7.11`; no native DLL build is required.
+
+## 0.7.11 proxy boundary caps
+
+- Replaced the proxy's generic boundary `holes_fill` step with explicit
+  per-loop cap construction. Each boundary loop gets a center cap vertex and a
+  fan of triangles, then face normals are recalculated.
+- This closes the original Body eye openings and the Yurameki ear-cut openings
+  as collision proxy geometry instead of leaving large wire-invisible n-gon
+  caps.
+- `Check` reports the number of cap vertices added as `capv=...` when a proxy
+  is rebuilt.
+
+## 0.7.10 repository cleanup
+
+- Removed the retired 0.6.x native CUDA cylinder-chain implementation from the
+  working tree: `gravity_sim.py`, `cuda_collider.py`, `solver_interface.py`,
+  and `native/`.
+- Removed older generated package archives from `dist/`. The current package is
+  rebuilt from the manifest paths only.
+- Replaced stale native-DLL manual test notes with this cleanup note. The old
+  implementation remains available through Git history if archaeology is
+  needed, but it is no longer an active source file.
 
 ## 0.7.9 post-KEEP collision projection
 
@@ -106,9 +128,8 @@ active extension package.
 - Removed active UI access to solver-step debugging, CUDA detection, cylinder
   length, propagation distance, and upper-shape memory. Those were tied to the
   discarded cylinder-chain path.
-- The old native CUDA and cylinder files remain in repository history and may
-  still exist in the working tree, but they are not included in the 0.7.0
-  extension manifest.
+- The old native CUDA and cylinder files remain in repository history, but they
+  are no longer present in the active working tree.
 
 ## 0.7.0 explosion-stability pass
 
@@ -175,98 +196,8 @@ active extension package.
   remains `1.0` so body/clothes penetration is fully repaired; lowering it is a
   tuning option for softer but less strict collider response.
 
-## 0.6.x archive
+## Retired Archives
 
-- The 0.6.0 path used native CUDA with fixed-length cylinder chains.
-- The 0.6.1 package fixes Blender 5.x Curves position baking by keyframing
-  `attributes["position"].data[i].vector` from the Curves datablock instead of
-  calling `keyframe_insert("vector")` on the attribute value itself.
-- The 0.6.2 package adds a Simulate bake mode. `Final Only` is the default and
-  writes only the final simulated frame to Hair Curves data. `Keyframes` keeps
-  the expensive full Curves position keyframe bake for deliberate animation
-  exports.
-- Simulate bake now stores each frame's evaluated-minus-original Curves offset
-  before writing any results and subtracts that offset when writing back. This
-  prevents surface-deform-style modifiers from being applied twice to simulated
-  world-space points.
-- The 0.6.3 package raises the default Simulate gravity from `1 mm` to `5 mm`
-  and the UI maximum from `10 mm` to `50 mm`. This keeps the current solver in
-  the intended non-XPBD direction: a non-stretch FK chain that always wants to
-  fall downward, follows root motion with falloff/delay, and leaves aerodynamic
-  drag for a later layer.
-- The 0.6.4 package adds Simulate upper-shape memory. At the start frame,
-  subdivided points above `Memory Height m` default `1.5 m` are marked as the
-  saved Settle/top groom shape. Each simulated frame reads the evaluated Curves
-  shape as the moving style target, then CUDA pulls only those marked upper
-  points toward that target by `Memory Strength`. Below the saved height, hair
-  remains an unconstrained non-stretch chain with downward gravity and collider
-  avoidance, so shoulder hair can fall when arms move down.
-- The 0.6.5 package changes Simulate collider response from only short
-  endpoint push-out toward traditional continuous segment/triangle collision
-  for cloth-like surfaces. A segment that crosses a collider triangle now
-  chooses the earliest crossing, orients the contact normal against motion, and
-  projects the fixed-length chain direction to slide along the surface. The
-  preferred fallback slide is down the surface, then backward for near-horizontal
-  cloth/shoulder surfaces. `COLLIDER_SUBSTEPS` defaults to `1`; raise it only
-  when multiple close surfaces must be resolved in a single segment step.
-- The 0.6.6 package fixes Simulate subdivision so the chain is resampled by
-  `Cylinder Length cm` as a maximum link length. `Interpolation` is kept as the
-  minimum number of subdivisions per original source segment, but no longer
-  prevents 1 cm/2 cm chain lengths from being honored. CUDA collision also
-  checks the endpoint sweep from the previous tip position to the candidate tip
-  position, so cloth/body surfaces are less likely to be crossed between
-  frames without contact.
-- The 0.6.7 package removes `Settle Hair Back` from Yurameki. Initial grooming
-  is owned by Tokoya; this repository now treats groom history as out of scope.
-
-## Retired Initial Groom Archive
-
-Detailed Yurameki-era initial-groom notes were removed because they described
-obsolete Settle behavior and encouraged future debugging to trust old visual
-acceptance records. For current grooming behavior, inspect Tokoya's active
-implementation and its evaluated-coordinate notes directly.
-
-## Verified Before Break
-
-FK root pull test through MCP:
-
-```text
-n_strands: 6000
-n_cylinders: 280105
-max_len_err_mm: about 0.00006
-max_chain_gap_mm: 0.0
-root pull: 0.3 mm default
-```
-
-CUDA native test:
-
-```text
-detect: hit_count = 1 on a minimal triangle test
-avoidance: adjusted tip returned, length error = 0.0
-```
-
-## Next Manual Test
-
-In Blender, install/use the 0.6.6 source add-on after rebuilding
-`native/yurameki_cuda_collide.dll`, then:
-
-1. Select `CC_Base_Body` or the intended mesh collider.
-2. Press `Pick Body`.
-3. Press `Check`; it validates Curves hair and builds the filled collider proxy.
-4. Optionally select a clothes mesh and press `Pick Clothes`.
-5. Press `Detect CUDA Collider`; this is the preparation/check step.
-6. Set `Start Frame` and `End Frame`.
-7. Keep `Memory Height m` near `1.5` so only the upper groom is remembered.
-8. Press `Simulate` to compute the frame range in memory and bake
-   Curves position keyframes after completion.
-
-Important: broadphase uniform grid is not implemented yet.  The 0.6.0 CUDA
-collider path uses capsule/triangle AABB rejection before exact distance tests,
-but still scans collider triangles inside each kernel.
-
-## Retired 0.5/0.4 Groom Notes
-
-Detailed 0.5 and 0.4 initial-groom investigation notes were removed from this
-active Yurameki development log. They referred to a grooming path that is no
-longer part of Yurameki and contained visual acceptance language that can
-mislead later debugging.
+Detailed 0.6.x native CUDA and older initial-groom notes were removed from this
+active development log because they described code paths that are no longer
+present. Use Git history for those details when needed.

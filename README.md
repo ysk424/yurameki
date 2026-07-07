@@ -1,4 +1,4 @@
-# Yurameki 0.7.9
+# Yurameki 0.7.11
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -98,6 +98,9 @@ Body uses the Yurameki filled proxy, because closed body collision needs stable
 inside/outside queries and fewer holes. Clothes are not proxied by default. This
 keeps Marvelous Designer Alembic / Mesh Sequence Cache clothes evaluated at the
 current frame.
+The proxy caps boundary loops, including eye openings and ear-cut openings, with
+explicit triangulated cap vertices instead of relying on large single hole-fill
+faces.
 
 Collision uses Warp Mesh ray and nearest-point queries. Body and Clothes are
 kept as separate Warp meshes: Body uses signed nearest-surface push-out, Clothes
@@ -119,3 +122,9 @@ substeps, plus the selected CUDA device and SM architecture, for example
 The 0.7.8 MCP validation run used `KEEP LENGTH` on a 6000-strand / 12-point
 Curves test from frame 1 to frame 2. Evaluated viewport/cache playback lengths
 matched frame 1 with maximum absolute total-strand error below `0.001 mm`.
+
+## Repository Notes
+
+The active extension package is Warp-only. The retired 0.6.x native CUDA
+cylinder-chain implementation is kept in Git history, not in the current source
+tree or build package.
