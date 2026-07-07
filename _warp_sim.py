@@ -487,6 +487,29 @@ def _write_world_points(curves_obj, world_pts: np.ndarray, offset=None) -> None:
     curves_obj.data.update_tag()
 
 
+def _force_viewport_refresh() -> None:
+    bpy.context.view_layer.update()
+    if bpy.app.background:
+        return
+    try:
+        for window in bpy.context.window_manager.windows:
+            screen = window.screen
+            if screen is None:
+                continue
+            for area in screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+        bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+    except Exception:
+        pass
+
+
+def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None) -> None:
+    bpy.context.scene.frame_set(int(frame))
+    _write_world_points(curves_obj, world_pts, offset=offset)
+    _force_viewport_refresh()
+
+
 def _world_to_local_points(curves_obj, world_pts: np.ndarray, offset=None) -> np.ndarray:
     n_total = len(world_pts)
     write_pts = world_pts if offset is None else world_pts - offset
@@ -647,6 +670,26 @@ def _target_motion_mm(prev_targets: np.ndarray, next_targets: np.ndarray,
         return 0.0
     delta = next_targets[locked] - prev_targets[locked]
     return float(np.max(np.linalg.norm(delta, axis=1)) * 1000.0) if len(delta) else 0.0
+
+
+def _read_targets_for_frames(curves_obj, frames: list[int]) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    target_worlds: dict[int, np.ndarray] = {}
+    offsets: dict[int, np.ndarray] = {}
+    expected_points = None
+    scene = bpy.context.scene
+    for frame in frames:
+        scene.frame_set(int(frame))
+        eval_world, original_world = _read_world(curves_obj)
+        if expected_points is None:
+            expected_points = len(eval_world)
+        elif len(eval_world) != expected_points:
+            raise ValueError(
+                "Curves point count changed during simulation target read: "
+                f"frame {frame} has {len(eval_world)} points, expected {expected_points}"
+            )
+        target_worlds[int(frame)] = eval_world.copy()
+        offsets[int(frame)] = eval_world - original_world
+    return target_worlds, offsets
 
 
 def _bake_position_keyframes(curves_obj, frames: list[int],
@@ -1236,6 +1279,8 @@ def simulate(
     last_triangles = 0
     success = False
     cache_path = ""
+    target_worlds = {}
+    offsets = {}
     global _CACHE_MUTED
     previous_cache_muted = _CACHE_MUTED
     _CACHE_MUTED = True
@@ -1245,8 +1290,9 @@ def simulate(
         scene.frame_set(start_frame)
         pps, n_strands = _uniform_points_per_strand(curves_obj)
         locked = max(1, min(int(root_locked_points), pps))
-        init_eval, init_original = _read_world(curves_obj)
-        offset = init_eval - init_original
+        target_read_frames = sorted({int(frame) for frame in frames + [original_frame]})
+        target_worlds, offsets = _read_targets_for_frames(curves_obj, target_read_frames)
+        init_eval = target_worlds[start_frame]
         guide_indices = _decimated_guide_indices(n_strands, guide_decimation)
         guide_point_indices = _guide_point_indices(guide_indices, pps)
         sim_init = np.ascontiguousarray(init_eval[guide_point_indices], dtype=np.float32)
@@ -1261,14 +1307,13 @@ def simulate(
         simulator = WarpJointSimulator(sim_init, pps, locked, particle_mass)
         prev_targets = sim_init.copy()
         current_world = init_eval.copy()
-        offsets = {start_frame: offset}
         baked = {start_frame: current_world.copy()}
+        _show_sim_frame(curves_obj, start_frame, current_world, offset=offsets[start_frame])
 
         dt_frame = float(scene.render.fps_base) / max(float(scene.render.fps), 1.0)
         for frame in frames[1:]:
             scene.frame_set(frame)
-            eval_world, original_world = _read_world(curves_obj)
-            offsets[frame] = eval_world - original_world
+            eval_world = target_worlds[frame]
             eval_sim_world = np.ascontiguousarray(eval_world[guide_point_indices], dtype=np.float32)
             target_move_mm = _target_motion_mm(prev_targets, eval_sim_world, simulator.inv_mass_np)
             inertial_move_mm = simulator.estimated_free_move_mm(dt_frame, gravity)
@@ -1323,6 +1368,7 @@ def simulate(
             total_hits += hits
             prev_targets = eval_sim_world.copy()
             baked[frame] = current_world.copy()
+            _show_sim_frame(curves_obj, frame, current_world, offset=offsets[frame])
 
         if bake_mode == "KEYFRAMES":
             _bake_position_keyframes(curves_obj, frames, baked, offsets)
@@ -1337,6 +1383,13 @@ def simulate(
         _CACHE_MUTED = previous_cache_muted
         if not success:
             scene.frame_set(original_frame)
+            if original_frame in target_worlds and original_frame in offsets:
+                _write_world_points(
+                    curves_obj,
+                    target_worlds[original_frame],
+                    offset=offsets[original_frame],
+                )
+                _force_viewport_refresh()
 
     return WarpSimStats(
         start_frame=start_frame,

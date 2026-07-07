@@ -1,4 +1,4 @@
-# Yurameki 0.7.6
+# Yurameki 0.7.7
 
 Yurameki is now a NVIDIA Warp long-straight-hair simulation prototype.
 
@@ -26,8 +26,9 @@ The panel has two command buttons:
 - `Check`: validates Hair, Body, optional Clothes, builds/reuses the Body proxy,
   and verifies Warp CUDA / Mesh initialization.
 - `Simulate`: runs the Warp joint-chain simulation for the frame range and
-  stores every simulated frame in the Yurameki runtime cache by default. On
-  success, Blender is left on the end frame so the simulated result is visible.
+  stores every simulated frame in the Yurameki runtime cache by default. Each
+  completed frame is shown in the viewport during the run, and on success
+  Blender is left on the end frame so the simulated result is visible.
 - `Bake Cache`: converts the current Yurameki runtime cache to Curves position
   keyframes when you are ready to commit the result.
 

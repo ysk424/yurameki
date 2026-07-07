@@ -2,7 +2,7 @@
 
 Status: active development fork.
 
-Current version: 0.7.6.
+Current version: 0.7.7.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,15 @@ active extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.6`; no native DLL build is required.
+- Latest package target: source tree `0.7.7`; no native DLL build is required.
+
+## 0.7.7 live frame preview
+
+- `Simulate` now writes each completed frame to the visible Curves object and
+  forces a viewport refresh during the run, so long simulations show progress in
+  Blender instead of staying visually frozen until the end.
+- Target Curves poses are read before live preview writes begin, keeping the
+  preview output from feeding back into the next frame's simulation input.
 
 ## 0.7.6 guide decimation cache test
 
