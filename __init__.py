@@ -30,8 +30,8 @@ def _load_defaults():
 
 def _default_particle_mass_g(defaults):
     if "PARTICLE_MASS_G" in defaults:
-        return float(defaults.get("PARTICLE_MASS_G", 1.0))
-    return float(defaults.get("PARTICLE_MASS_KG", 0.001)) * 1000.0
+        return float(defaults.get("PARTICLE_MASS_G", 0.01))
+    return float(defaults.get("PARTICLE_MASS_KG", 0.00001)) * 1000.0
 
 
 def _default_log10(defaults, key: str, fallback: float) -> float:
@@ -472,14 +472,14 @@ def register():
         WindowManager.yurameki_iterations = IntProperty(
             name="Iterations",
             description="CUDA Warp distance/bend constraint iterations",
-            default=int(defaults.get("ITERATIONS", 30)),
+            default=int(defaults.get("ITERATIONS", 20)),
             min=1,
             max=256,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_stretch_compliance_log10 = FloatProperty(
             name="Stretch Compliance log10",
-            default=_default_log10(defaults, "STRETCH_COMPLIANCE", 1.0e-8),
+            default=_default_log10(defaults, "STRETCH_COMPLIANCE", 1.0e-2),
             min=-12.0,
             max=0.0,
             precision=2,

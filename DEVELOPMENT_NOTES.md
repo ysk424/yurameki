@@ -32,6 +32,15 @@ release extension package.
 
 ## 0.7.15 constraint and runtime cache correctness
 
+- Removed the model-specific absolute-coordinate ear-cut implementation from
+  Body proxy construction. The proxy preserves source geometry and only caps
+  existing boundary loops. The proxy schema was incremented so proxies created
+  by the earlier implementation are rebuilt instead of reused.
+- Removed extension-level `translate=False` overrides. Yurameki defines English
+  source strings and registers no translation dictionary; displayed
+  localization is handled by Blender's UI translation system.
+- Changed the tuning defaults to `Iterations=20`, `Particle Mass=0.01 g`, and
+  `Stretch Compliance log10=-2` (`STRETCH_COMPLIANCE=1e-2`).
 - The selected start frame is now an unchanged initial hair state. XPBD,
   `KEEP LENGTH`, Body guard, and FK correction begin at the following frame;
   the end frame must be greater than the start frame.
@@ -54,9 +63,8 @@ release extension package.
 ## 0.7.14 English manifest and CUDA iteration default
 
 - Removed the remaining Japanese text from the public manifest tagline.
-- Disabled UI translation for the Yurameki panel labels and property rows so
-  Blender's Japanese UI does not translate public labels such as Input, Hair,
-  Output, Runtime Cache, Warp, or Collision.
+- Public strings were standardized in English. UI localization remains a
+  Blender feature rather than an extension-provided translation catalog.
 - Raised the default `Iterations` value from `8` to `30` for straight-hair
   stiffness tests. These distance/bend constraint iterations already run as
   NVIDIA Warp CUDA kernels, so this increases the CUDA solver work without
@@ -103,9 +111,9 @@ release extension package.
 - Replaced the proxy's generic boundary `holes_fill` step with explicit
   per-loop cap construction. Each boundary loop gets a center cap vertex and a
   fan of triangles, then face normals are recalculated.
-- This closes the original Body eye openings and the Yurameki ear-cut openings
-  as collision proxy geometry instead of leaving large wire-invisible n-gon
-  caps.
+- At that release this closed the original Body eye openings and the then-used
+  ear-cut openings instead of leaving large wire-invisible n-gon caps. Current
+  proxy construction no longer performs ear cutting.
 - `Check` reports the number of cap vertices added as `capv=...` when a proxy
   is rebuilt.
 

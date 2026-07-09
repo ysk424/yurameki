@@ -12,10 +12,8 @@ import bpy
 
 PROXY_FLAG = "yurameki_collider_proxy"
 PROXY_SOURCE = "yurameki_collider_proxy_source"
-
-EAR_CUT_Z_MIN = 1.50
-EAR_CUT_Z_MAX = 1.72
-EAR_CUT_ABS_X = 0.09
+PROXY_SCHEMA = "yurameki_collider_proxy_schema"
+CURRENT_PROXY_SCHEMA = 2
 
 
 def _mesh_boundary_count(mesh) -> int:
@@ -98,31 +96,6 @@ def _cap_boundary_loops(mesh) -> tuple[int, int, int, int]:
         bm.free()
 
 
-def _remove_ear_protrusions(proxy_obj) -> int:
-    mesh = proxy_obj.data
-    world = proxy_obj.matrix_world.copy()
-    bm = bmesh.new()
-    try:
-        bm.from_mesh(mesh)
-        bm.faces.ensure_lookup_table()
-        remove_faces = []
-        for face in bm.faces:
-            center = world @ face.calc_center_median()
-            if (
-                EAR_CUT_Z_MIN <= center.z <= EAR_CUT_Z_MAX
-                and abs(center.x) >= EAR_CUT_ABS_X
-            ):
-                remove_faces.append(face)
-        if remove_faces:
-            bmesh.ops.delete(bm, geom=remove_faces, context="FACES")
-            bm.normal_update()
-            bm.to_mesh(mesh)
-            mesh.update()
-        return len(remove_faces)
-    finally:
-        bm.free()
-
-
 def _remove_proxy_object(obj) -> None:
     mesh = obj.data if obj.type == "MESH" else None
     bpy.data.objects.remove(obj, do_unlink=True)
@@ -154,6 +127,7 @@ def get_valid_proxy(source_obj, proxy_name: str):
         and proxy.type == "MESH"
         and bool(proxy.get(PROXY_FLAG, False))
         and proxy.get(PROXY_SOURCE) == source_obj.name
+        and proxy.get(PROXY_SCHEMA, 0) == CURRENT_PROXY_SCHEMA
     ):
         _hide_proxy_for_viewport(proxy)
         return proxy
@@ -180,6 +154,7 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
     proxy.data.name = f"{proxy.name}_mesh"
     proxy[PROXY_FLAG] = True
     proxy[PROXY_SOURCE] = source_obj.name
+    proxy[PROXY_SCHEMA] = CURRENT_PROXY_SCHEMA
 
     collections = tuple(source_obj.users_collection)
     if collections:
@@ -188,7 +163,6 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
         bpy.context.scene.collection.objects.link(proxy)
     _hide_proxy_for_viewport(proxy)
 
-    ear_faces_removed = _remove_ear_protrusions(proxy)
     boundary_before, boundary_after, faces_added, cap_vertices_added = _cap_boundary_loops(proxy.data)
     bpy.context.view_layer.update()
 
@@ -199,6 +173,5 @@ def build_filled_proxy(source_obj, existing_proxy_name: str = "") -> dict:
         "boundary_edges_after": int(boundary_after),
         "faces_added": int(faces_added),
         "cap_vertices_added": int(cap_vertices_added),
-        "ear_faces_removed": int(ear_faces_removed),
         "modifiers": len(proxy.modifiers),
     }

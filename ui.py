@@ -19,15 +19,15 @@ def _version():
 
 
 def _label(layout, text: str) -> None:
-    layout.label(text=text, translate=False)
+    layout.label(text=text)
 
 
 def _prop(layout, wm, name: str) -> None:
-    layout.prop(wm, name, translate=False)
+    layout.prop(wm, name)
 
 
 def _operator(layout, op_id: str, *, text: str | None = None, icon: str = "NONE"):
-    kwargs = {"icon": icon, "translate": False}
+    kwargs = {"icon": icon}
     if text is not None:
         kwargs["text"] = text
     return layout.operator(op_id, **kwargs)

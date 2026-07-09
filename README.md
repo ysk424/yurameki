@@ -38,7 +38,7 @@ dist/yurameki-0.7.15.zip
 
 ## UI
 
-The panel has two command buttons:
+The panel has three command buttons:
 
 - `Check`: validates Hair, Body, optional Clothes, builds/reuses the Body proxy,
   and verifies Warp CUDA / Mesh initialization.
@@ -54,6 +54,11 @@ Hair, Body, and Clothes are selected by eyedropper fields.
 `Start Frame` is the unchanged initial hair state. Simulation and correction
 start at `Start Frame + 1` and continue through `End Frame`, inclusive. `End
 Frame` must be greater than `Start Frame`.
+
+All extension source labels are written in English. Yurameki does not ship or
+register its own translation dictionary. Blender may localize standard UI terms,
+including parameter names, according to its Interface Translation settings;
+Japanese UI text therefore comes from Blender, not from Yurameki.
 
 `Output: Runtime Cache` is the default. It keeps simulation playback in a cache
 instead of immediately creating millions of Curves `position` F-Curves.
@@ -92,11 +97,12 @@ strand's straight continuation before falling back to a seed-ray escape point.
 - `Gravity m/s2`: Warp-style acceleration vector.
 - `Damping`: velocity damping after prediction.
 - `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
-- `Particle Mass g`: mass used for inverse mass of free joints.
+- `Particle Mass g`: mass used for inverse mass of free joints. The default is
+  `0.01 g`.
 - `Iterations`: CUDA Warp distance/bend constraint iterations. The default is
-  `30` for stiff, aligned long hair tests, and the UI allows up to `256`.
+  `20`, and the UI allows up to `256`.
 - `Stretch Compliance log10`: base-10 exponent for XPBD-style compliance of
-  adjacent joint lengths. `-8` means `1e-8`.
+  adjacent joint lengths. The default `-2` means `1e-2`.
 - `Bend Compliance log10`: base-10 exponent for XPBD-style compliance of
   two-joint bend distances. `-5` means `1e-5`.
 - `Collision Margin mm`: target separation from collider mesh.
@@ -126,9 +132,10 @@ Body uses the Yurameki filled proxy, because closed body collision needs stable
 inside/outside queries and fewer holes. Clothes are not proxied by default. This
 keeps Marvelous Designer Alembic / Mesh Sequence Cache clothes evaluated at the
 current frame.
-The proxy caps boundary loops, including eye openings and ear-cut openings, with
-explicit triangulated cap vertices instead of relying on large single hole-fill
-faces.
+The proxy preserves the complete source mesh, including ears, and caps existing
+boundary loops such as eye openings with explicit triangulated cap vertices
+instead of relying on large single hole-fill faces. It contains no
+model-specific absolute-coordinate face removal.
 
 Collision uses Warp Mesh ray and nearest-point queries. Body and Clothes are
 kept as separate Warp meshes: Body uses signed nearest-surface push-out, Clothes
@@ -163,6 +170,13 @@ package.
 
 ## 0.7.15 Release
 
+- Removed model-specific absolute-coordinate Body proxy ear cutting. The proxy
+  now preserves the source ears and only caps existing boundary loops. Proxies
+  created by the earlier schema are rebuilt automatically.
+- UI localization is provided by Blender. Yurameki supplies English source
+  strings and no extension-specific translation dictionary.
+- Changed defaults to `Iterations=20`, `Particle Mass=0.01 g`, and
+  `Stretch Compliance log10=-2`.
 - `Start Frame` is now an unchanged initial state; simulation and correction
   run from the following frame through `End Frame`.
 - Body correction obtains its Head seed from each simulated frame.
@@ -179,7 +193,8 @@ package.
 
 ## 0.7.14 Release
 
-- Public labels are English-only, even when Blender's UI language is Japanese.
+- Public source labels are English; displayed localization is handled by
+  Blender's UI translation system.
 - `Iterations` defaults to `30` for stiff straight-hair tests.
 - Completed frames are shown in the viewport during simulation.
 - Yurameki Body proxy colliders are hidden in the viewport after creation or
