@@ -1,4 +1,4 @@
-# Yurameki 0.7.14
+# Yurameki 0.7.15
 
 Yurameki is a Blender extension for simulating VR-character-style long straight
 hair with NVIDIA Warp.
@@ -19,7 +19,7 @@ the hair, then Yurameki simulates it.
 Install the release ZIP through Blender's extension/add-on installer:
 
 ```text
-dist/yurameki-0.7.14.zip
+dist/yurameki-0.7.15.zip
 ```
 
 ## Direction
@@ -51,6 +51,10 @@ The panel has two command buttons:
 
 Hair, Body, and Clothes are selected by eyedropper fields.
 
+`Start Frame` is the unchanged initial hair state. Simulation and correction
+start at `Start Frame + 1` and continue through `End Frame`, inclusive. `End
+Frame` must be greater than `Start Frame`.
+
 `Output: Runtime Cache` is the default. It keeps simulation playback in a cache
 instead of immediately creating millions of Curves `position` F-Curves.
 `Position Keyframes` keeps the direct F-Curve bake path for final Blender-native
@@ -62,10 +66,11 @@ operator.
 
 `KEEP LENGTH` is the default length-safety path. Frame 1 is treated as the rest
 shape for every strand segment. After each simulated frame, Yurameki keeps the
-simulated rod directions but rebuilds all joints after point 0 by FK from the
-frame-1 segment lengths. The corrected result is used for live preview, cache
-playback, final preview, and keyframe baking, and the corrected guide state is
-fed back into the next frame.
+simulated rod directions but rebuilds the free joints after the locked prefix by
+FK from the frame-1 segment lengths. All `Root Locked Points` remain at the
+evaluated pose. The corrected result is used for live preview, cache playback,
+final preview, and keyframe baking, and the corrected guide state is fed back
+into the next frame.
 
 0.7.13 adds a Body FK hard repair pass after the seed hard guard. Active strands
 are reconstructed root-to-tip from their rest lengths; when a joint would remain
@@ -81,9 +86,9 @@ strand's straight continuation before falling back to a seed-ray escape point.
   about one percent of the strands.
 - `KEEP LENGTH`: rebuild every simulated strand from its frame-1 segment
   lengths before live preview, cache output, final preview, or keyframe baking.
-  Point 0 stays at the simulated root; all later joints are FK-rebuilt along the
-  simulated rod directions, and the corrected guide state is fed back into the
-  next frame.
+  The complete locked prefix stays at the evaluated pose; later joints are
+  FK-rebuilt along the simulated rod directions, and the corrected guide state
+  is fed back into the next frame.
 - `Gravity m/s2`: Warp-style acceleration vector.
 - `Damping`: velocity damping after prediction.
 - `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
@@ -155,6 +160,22 @@ matched frame 1 with maximum absolute total-strand error below `0.001 mm`.
 The release package is Warp-only. The retired 0.6.x native CUDA cylinder-chain
 implementation is kept in Git history, not in the current source tree or build
 package.
+
+## 0.7.15 Release
+
+- `Start Frame` is now an unchanged initial state; simulation and correction
+  run from the following frame through `End Frame`.
+- Body correction obtains its Head seed from each simulated frame.
+- Removed overlapping GPU writes from bend constraints by using four
+  non-conflicting constraint colors.
+- `KEEP LENGTH` and the Body hard guard now preserve every configured
+  `Root Locked Points` joint at the evaluated pose.
+- Runtime caches now restore the original Curves data outside the cached frame
+  range before Blender evaluates existing animation.
+- Runtime caches are isolated by Blend file and are cleared safely when a file
+  is loaded or saved under another name.
+- Runtime caches are invalidated safely when Curves point counts or curve span
+  layouts change.
 
 ## 0.7.14 Release
 

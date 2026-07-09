@@ -79,8 +79,11 @@ class WarpSimStats:
 class YuramekiRuntimeCache:
     object_name: str
     data_name: str
+    blend_path: str
     frames: np.ndarray
     local_values: np.ndarray
+    restore_local_values: np.ndarray
+    curve_spans: np.ndarray
     path: str
 
     @property
@@ -195,7 +198,7 @@ def _solve_bend_kernel(
     inv_mass: wp.array(dtype=float),
     rest: wp.array(dtype=float),
     points_per_strand: int,
-    parity: int,
+    color: int,
     compliance: float,
     dt: float,
 ):
@@ -204,7 +207,9 @@ def _solve_bend_kernel(
     bend_id = wp.tid()
     bends_per_strand = points_per_strand - 2
     local = bend_id % bends_per_strand
-    if local % 2 != parity:
+    # Bend edges connect local points i and i+2, so four colors are needed
+    # to keep threads in one launch from writing the same point.
+    if local % 4 != color:
         return
 
     strand = bend_id // bends_per_strand
@@ -732,6 +737,7 @@ def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
                 int(pps),
                 keep_rest_lengths,
                 keep_fallback_dirs,
+                root_locked_points=int(body_fk_root_locked_points),
             )
             max_error = max(max_error, keep_error)
             _write_world_points(curves_obj, corrected, offset=eval_world - original_world)
@@ -745,6 +751,7 @@ def _show_sim_frame(curves_obj, frame: int, world_pts: np.ndarray, offset=None,
                 body_hard_guard_margin,
                 body_hard_guard_seed,
                 points_per_strand=int(pps),
+                root_locked_points=int(body_fk_root_locked_points),
             )
             if fixed and keep_rest_lengths is not None and keep_fallback_dirs is not None:
                 guarded, _repair_stats, _repair_strands = _apply_body_fk_hard_repair(
@@ -1200,7 +1207,8 @@ def _apply_body_fk_hard_repair(points: np.ndarray,
 def _apply_body_seed_hard_guard(points: np.ndarray, body_obj,
                                 margin: float,
                                 seed_world=None,
-                                points_per_strand: int | None = None):
+                                points_per_strand: int | None = None,
+                                root_locked_points: int = 0):
     pps_for_mask = int(points_per_strand) if points_per_strand is not None else 0
     empty_strands = np.zeros(
         int(math.ceil(len(points) / float(pps_for_mask))) if pps_for_mask > 0 else 0,
@@ -1231,8 +1239,11 @@ def _apply_body_seed_hard_guard(points: np.ndarray, body_obj,
     pps = pps_for_mask
     if pps > 0:
         fixed_strands = empty_strands
+    locked = max(0, min(int(root_locked_points), pps)) if pps > 0 else 0
 
     for index, point in enumerate(out):
+        if locked and index % pps < locked:
+            continue
         p_world = Vector((float(point[0]), float(point[1]), float(point[2])))
         p_local = matrix_inv @ p_world
         local_delta = p_local - seed_local
@@ -1291,7 +1302,8 @@ def _segment_lengths_and_dirs(points: np.ndarray, pps: int) -> tuple[np.ndarray,
 
 def _keep_length_fk(points: np.ndarray, pps: int,
                     rest_lengths: np.ndarray,
-                    fallback_dirs: np.ndarray) -> tuple[np.ndarray, float]:
+                    fallback_dirs: np.ndarray,
+                    root_locked_points: int = 1) -> tuple[np.ndarray, float]:
     strands = np.asarray(points, dtype=np.float32).reshape(-1, int(pps), 3)
     if rest_lengths.shape != (strands.shape[0], int(pps) - 1):
         raise ValueError(
@@ -1305,11 +1317,18 @@ def _keep_length_fk(points: np.ndarray, pps: int,
     dirs[valid] = (seg[valid] / seg_lengths[valid][:, None]).astype(np.float32)
     scaled = dirs * rest_lengths[:, :, None]
     out = np.empty_like(strands, dtype=np.float32)
-    out[:, 0, :] = strands[:, 0, :]
-    out[:, 1:, :] = out[:, 0:1, :] + np.cumsum(scaled, axis=1, dtype=np.float32)
+    locked = max(1, min(int(root_locked_points), int(pps)))
+    out[:, :locked, :] = strands[:, :locked, :]
+    if locked < int(pps):
+        out[:, locked:, :] = out[:, locked - 1:locked, :] + np.cumsum(
+            scaled[:, locked - 1:, :],
+            axis=1,
+            dtype=np.float32,
+        )
     out_seg = out[:, 1:, :] - out[:, :-1, :]
     out_lengths = np.linalg.norm(out_seg, axis=2)
-    max_error = float(np.max(np.abs(out_lengths - rest_lengths)) * 1000.0) if out_lengths.size else 0.0
+    free_errors = np.abs(out_lengths[:, locked - 1:] - rest_lengths[:, locked - 1:])
+    max_error = float(np.max(free_errors) * 1000.0) if free_errors.size else 0.0
     return np.ascontiguousarray(out.reshape(-1, 3), dtype=np.float32), max_error
 
 
@@ -1453,7 +1472,6 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
                              keep_fallback_dirs: np.ndarray | None = None,
                              body_hard_guard_obj=None,
                              body_hard_guard_margin: float = 0.0,
-                             body_hard_guard_seed=None,
                              body_fk_root_locked_points: int = 1) -> None:
     local_values = _local_values_from_world(
         curves_obj,
@@ -1465,7 +1483,6 @@ def _bake_position_keyframes(curves_obj, frames: list[int],
         keep_fallback_dirs=keep_fallback_dirs,
         body_hard_guard_obj=body_hard_guard_obj,
         body_hard_guard_margin=body_hard_guard_margin,
-        body_hard_guard_seed=body_hard_guard_seed,
         body_fk_root_locked_points=body_fk_root_locked_points,
     )
     _bake_local_position_keyframes(curves_obj, frames, local_values)
@@ -1479,7 +1496,6 @@ def _local_values_from_world(curves_obj, frames: list[int],
                              keep_fallback_dirs: np.ndarray | None = None,
                              body_hard_guard_obj=None,
                              body_hard_guard_margin: float = 0.0,
-                             body_hard_guard_seed=None,
                              body_fk_root_locked_points: int = 1,
                              correction_passes: int = 3) -> np.ndarray:
     attr = curves_obj.data.attributes.get("position")
@@ -1498,7 +1514,13 @@ def _local_values_from_world(curves_obj, frames: list[int],
             baked[frame],
             offset=offsets[frame],
         )
-        if pps is not None and keep_rest_lengths is not None and keep_fallback_dirs is not None:
+        apply_corrections = frame_index > 0
+        if (
+            apply_corrections
+            and pps is not None
+            and keep_rest_lengths is not None
+            and keep_fallback_dirs is not None
+        ):
             for _ in range(max(1, int(correction_passes))):
                 _write_local_points(curves_obj, local)
                 bpy.context.view_layer.update()
@@ -1508,13 +1530,19 @@ def _local_values_from_world(curves_obj, frames: list[int],
                     int(pps),
                     keep_rest_lengths,
                     keep_fallback_dirs,
+                    root_locked_points=int(body_fk_root_locked_points),
                 )
                 local = _world_to_local_points(
                     curves_obj,
                     corrected,
                     offset=eval_world - original_world,
                 )
-        if body_hard_guard_obj is not None and body_hard_guard_seed is not None:
+        current_body_seed = (
+            _head_seed_world(body_hard_guard_obj)
+            if apply_corrections and body_hard_guard_obj is not None
+            else None
+        )
+        if body_hard_guard_obj is not None and current_body_seed is not None:
             _write_local_points(curves_obj, local)
             bpy.context.view_layer.update()
             eval_world, original_world = _read_world(curves_obj)
@@ -1523,8 +1551,9 @@ def _local_values_from_world(curves_obj, frames: list[int],
                     eval_world,
                     body_hard_guard_obj,
                     body_hard_guard_margin,
-                    body_hard_guard_seed,
+                    current_body_seed,
                     points_per_strand=int(pps),
+                    root_locked_points=int(body_fk_root_locked_points),
                 )
                 if fixed and keep_rest_lengths is not None and keep_fallback_dirs is not None:
                     guarded, _repair_stats, _repair_strands = _apply_body_fk_hard_repair(
@@ -1534,7 +1563,7 @@ def _local_values_from_world(curves_obj, frames: list[int],
                         keep_fallback_dirs,
                         body_hard_guard_obj,
                         body_hard_guard_margin,
-                        body_hard_guard_seed,
+                        current_body_seed,
                         root_locked_points=int(body_fk_root_locked_points),
                         active_strands=guard_strands,
                     )
@@ -1543,7 +1572,7 @@ def _local_values_from_world(curves_obj, frames: list[int],
                     eval_world,
                     body_hard_guard_obj,
                     body_hard_guard_margin,
-                    body_hard_guard_seed,
+                    current_body_seed,
                 )
             local = _world_to_local_points(
                 curves_obj,
@@ -1611,8 +1640,14 @@ def _cache_dir() -> str:
 
 
 def _cache_file_path(curves_obj, start_frame: int, end_frame: int) -> str:
+    blend_path = bpy.data.filepath
+    blend_name = os.path.splitext(os.path.basename(blend_path))[0] if blend_path else f"unsaved_{os.getpid()}"
+    safe_blend_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in blend_name)
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in curves_obj.name)
-    return os.path.join(_cache_dir(), f"{safe_name}_{start_frame}_{end_frame}.npz")
+    return os.path.join(
+        _cache_dir(),
+        f"{safe_blend_name}_{safe_name}_{start_frame}_{end_frame}.npz",
+    )
 
 
 def _write_local_points(curves_obj, local_pts: np.ndarray) -> None:
@@ -1623,12 +1658,71 @@ def _write_local_points(curves_obj, local_pts: np.ndarray) -> None:
     curves_obj.data.update_tag()
 
 
+def _read_local_points(curves_obj) -> np.ndarray:
+    attr = curves_obj.data.attributes.get("position")
+    if attr is None or len(attr.data) == 0:
+        raise ValueError("Curves has no position attribute")
+    flat = np.empty(len(attr.data) * 3, dtype=np.float32)
+    attr.data.foreach_get("vector", flat)
+    return np.ascontiguousarray(flat.reshape(-1, 3), dtype=np.float32)
+
+
+def _cache_object(cache: YuramekiRuntimeCache):
+    obj = bpy.data.objects.get(cache.object_name)
+    if obj is None or obj.type != "CURVES" or obj.data.name != cache.data_name:
+        return None
+    attr = obj.data.attributes.get("position")
+    if (
+        attr is None
+        or len(attr.data) != cache.n_points
+        or cache.restore_local_values.shape != (cache.n_points, 3)
+    ):
+        return None
+    current_spans = np.asarray(_curve_spans(obj), dtype=np.int64)
+    if current_spans.shape != cache.curve_spans.shape or not np.array_equal(
+        current_spans,
+        cache.curve_spans,
+    ):
+        return None
+    return obj
+
+
+def _current_blend_path() -> str:
+    return os.path.abspath(bpy.data.filepath) if bpy.data.filepath else ""
+
+
+def _cache_owner_matches(cache: YuramekiRuntimeCache) -> bool:
+    return os.path.normcase(cache.blend_path) == os.path.normcase(_current_blend_path())
+
+
+def _remove_cache_metadata(data) -> None:
+    for key in ("yurameki_cache_path", "yurameki_cache_start", "yurameki_cache_end"):
+        try:
+            del data[key]
+        except Exception:
+            pass
+
+
+def _invalidate_cache(key: str, cache: YuramekiRuntimeCache, reason: str,
+                      restore: bool = False) -> None:
+    _CACHE_REGISTRY.pop(key, None)
+    obj = bpy.data.objects.get(cache.object_name)
+    if obj is not None and obj.type == "CURVES" and obj.data.name == cache.data_name:
+        if restore and _cache_object(cache) is not None:
+            try:
+                _write_local_points(obj, cache.restore_local_values)
+            except Exception:
+                pass
+        _remove_cache_metadata(obj.data)
+    print(f"Yurameki cache disabled for {cache.object_name}: {reason}")
+
+
 def _apply_cache_frame(cache: YuramekiRuntimeCache, frame: int) -> bool:
     matches = np.nonzero(cache.frames == int(frame))[0]
     if len(matches) == 0:
         return False
-    obj = bpy.data.objects.get(cache.object_name)
-    if obj is None or obj.type != "CURVES" or obj.data.name != cache.data_name:
+    obj = _cache_object(cache)
+    if obj is None:
         return False
     _write_local_points(obj, cache.local_values[int(matches[0])])
     return True
@@ -1637,12 +1731,12 @@ def _apply_cache_frame(cache: YuramekiRuntimeCache, frame: int) -> bool:
 def _register_sim_cache(curves_obj, frames: list[int],
                         baked: dict[int, np.ndarray],
                         offsets: dict[int, np.ndarray],
+                        restore_local_values: np.ndarray | None = None,
                         pps: int | None = None,
                         keep_rest_lengths: np.ndarray | None = None,
                         keep_fallback_dirs: np.ndarray | None = None,
                         body_hard_guard_obj=None,
                         body_hard_guard_margin: float = 0.0,
-                        body_hard_guard_seed=None,
                         body_fk_root_locked_points: int = 1) -> YuramekiRuntimeCache:
     local_values = _local_values_from_world(
         curves_obj,
@@ -1654,23 +1748,38 @@ def _register_sim_cache(curves_obj, frames: list[int],
         keep_fallback_dirs=keep_fallback_dirs,
         body_hard_guard_obj=body_hard_guard_obj,
         body_hard_guard_margin=body_hard_guard_margin,
-        body_hard_guard_seed=body_hard_guard_seed,
         body_fk_root_locked_points=body_fk_root_locked_points,
     )
     frame_array = np.asarray(frames, dtype=np.int32)
+    if restore_local_values is None:
+        restore_local_values = _read_local_points(curves_obj)
+    restore_local_values = np.ascontiguousarray(restore_local_values, dtype=np.float32)
+    if restore_local_values.shape != (local_values.shape[1], 3):
+        raise ValueError(
+            "Cache restore position shape mismatch: "
+            f"{restore_local_values.shape} != {(local_values.shape[1], 3)}"
+        )
+    curve_spans = np.ascontiguousarray(_curve_spans(curves_obj), dtype=np.int64)
+    blend_path = _current_blend_path()
     path = _cache_file_path(curves_obj, int(frame_array[0]), int(frame_array[-1]))
     np.savez(
         path,
         frames=frame_array,
         local_values=np.ascontiguousarray(local_values, dtype=np.float32),
+        restore_local_values=restore_local_values,
+        curve_spans=curve_spans,
         object_name=np.array([curves_obj.name]),
         data_name=np.array([curves_obj.data.name]),
+        blend_path=np.array([blend_path]),
     )
     cache = YuramekiRuntimeCache(
         object_name=curves_obj.name,
         data_name=curves_obj.data.name,
+        blend_path=blend_path,
         frames=frame_array,
         local_values=np.ascontiguousarray(local_values, dtype=np.float32),
+        restore_local_values=restore_local_values,
+        curve_spans=curve_spans,
         path=os.path.abspath(path),
     )
     _CACHE_REGISTRY[curves_obj.name] = cache
@@ -1686,11 +1795,7 @@ def clear_runtime_cache(curves_obj) -> None:
     if curves_obj is None:
         return
     _CACHE_REGISTRY.pop(curves_obj.name, None)
-    for key in ("yurameki_cache_path", "yurameki_cache_start", "yurameki_cache_end"):
-        try:
-            del curves_obj.data[key]
-        except Exception:
-            pass
+    _remove_cache_metadata(curves_obj.data)
     if not _CACHE_REGISTRY:
         unregister_cache_handler()
 
@@ -1699,8 +1804,19 @@ def get_runtime_cache(curves_obj) -> YuramekiRuntimeCache | None:
     if curves_obj is None:
         return None
     cache = _CACHE_REGISTRY.get(curves_obj.name)
-    if cache is not None and cache.data_name == curves_obj.data.name:
-        return cache
+    if cache is not None:
+        if (
+            cache.data_name == curves_obj.data.name
+            and _cache_owner_matches(cache)
+            and _cache_object(cache) is not None
+        ):
+            return cache
+        _invalidate_cache(
+            curves_obj.name,
+            cache,
+            "Blend owner, Curves topology, or identity changed",
+            restore=True,
+        )
     path = str(curves_obj.data.get("yurameki_cache_path", "")).strip()
     if not path or not os.path.exists(path):
         return None
@@ -1708,22 +1824,58 @@ def get_runtime_cache(curves_obj) -> YuramekiRuntimeCache | None:
         with np.load(path, allow_pickle=False) as data:
             frames = np.ascontiguousarray(data["frames"], dtype=np.int32)
             local_values = np.ascontiguousarray(data["local_values"], dtype=np.float32)
+            supports_restore = "restore_local_values" in data and "curve_spans" in data
+            restore_local_values = (
+                np.ascontiguousarray(data["restore_local_values"], dtype=np.float32)
+                if "restore_local_values" in data
+                else _read_local_points(curves_obj)
+            )
+            curve_spans = (
+                np.ascontiguousarray(data["curve_spans"], dtype=np.int64)
+                if "curve_spans" in data
+                else np.ascontiguousarray(_curve_spans(curves_obj), dtype=np.int64)
+            )
+            stored_object_name = str(data["object_name"][0]) if "object_name" in data else ""
+            stored_data_name = str(data["data_name"][0]) if "data_name" in data else ""
+            stored_blend_path = str(data["blend_path"][0]) if "blend_path" in data else ""
     except Exception:
         return None
-    if local_values.ndim != 3 or local_values.shape[2] != 3:
+    if stored_object_name and stored_object_name != curves_obj.name:
+        return None
+    if stored_data_name and stored_data_name != curves_obj.data.name:
+        return None
+    current_blend_path = _current_blend_path()
+    if supports_restore and os.path.normcase(stored_blend_path) != os.path.normcase(current_blend_path):
+        return None
+    if (
+        frames.ndim != 1
+        or len(frames) == 0
+        or local_values.ndim != 3
+        or local_values.shape[2] != 3
+        or local_values.shape[0] != len(frames)
+    ):
         return None
     attr = curves_obj.data.attributes.get("position")
     if attr is None or local_values.shape[1] != len(attr.data):
         return None
+    if restore_local_values.shape != (local_values.shape[1], 3):
+        return None
+    current_spans = np.asarray(_curve_spans(curves_obj), dtype=np.int64)
+    if curve_spans.shape != current_spans.shape or not np.array_equal(curve_spans, current_spans):
+        return None
     cache = YuramekiRuntimeCache(
         object_name=curves_obj.name,
         data_name=curves_obj.data.name,
+        blend_path=stored_blend_path,
         frames=frames,
         local_values=local_values,
+        restore_local_values=restore_local_values,
+        curve_spans=curve_spans,
         path=os.path.abspath(path),
     )
-    _CACHE_REGISTRY[curves_obj.name] = cache
-    register_cache_handler()
+    if supports_restore:
+        _CACHE_REGISTRY[curves_obj.name] = cache
+        register_cache_handler()
     return cache
 
 
@@ -1752,21 +1904,73 @@ def bake_runtime_cache(curves_obj) -> dict:
 def _yurameki_cache_frame_change(_scene):
     if _CACHE_MUTED:
         return
-    frame = int(bpy.context.scene.frame_current)
-    for cache in tuple(_CACHE_REGISTRY.values()):
-        _apply_cache_frame(cache, frame)
+    frame = int(_scene.frame_current)
+    for key, cache in tuple(_CACHE_REGISTRY.items()):
+        try:
+            if not _cache_owner_matches(cache):
+                _invalidate_cache(key, cache, "Blend owner changed", restore=True)
+                continue
+            if _cache_object(cache) is None:
+                _invalidate_cache(key, cache, "Curves topology or identity changed")
+                continue
+            _apply_cache_frame(cache, frame)
+        except Exception as exc:
+            _invalidate_cache(key, cache, repr(exc))
+
+
+@persistent
+def _yurameki_cache_frame_change_pre(_scene):
+    if _CACHE_MUTED:
+        return
+    for key, cache in tuple(_CACHE_REGISTRY.items()):
+        try:
+            if not _cache_owner_matches(cache):
+                _invalidate_cache(key, cache, "Blend owner changed", restore=True)
+                continue
+            obj = _cache_object(cache)
+            if obj is None:
+                _invalidate_cache(key, cache, "Curves topology or identity changed")
+                continue
+            _write_local_points(obj, cache.restore_local_values)
+        except Exception as exc:
+            _invalidate_cache(key, cache, repr(exc))
+
+
+@persistent
+def _yurameki_cache_load_pre(_dummy):
+    _CACHE_REGISTRY.clear()
 
 
 def register_cache_handler() -> None:
-    handlers = bpy.app.handlers.frame_change_post
-    if _yurameki_cache_frame_change not in handlers:
-        handlers.append(_yurameki_cache_frame_change)
+    pre_handlers = bpy.app.handlers.frame_change_pre
+    if _yurameki_cache_frame_change_pre not in pre_handlers:
+        pre_handlers.append(_yurameki_cache_frame_change_pre)
+    post_handlers = bpy.app.handlers.frame_change_post
+    if _yurameki_cache_frame_change not in post_handlers:
+        post_handlers.append(_yurameki_cache_frame_change)
+    load_handlers = bpy.app.handlers.load_pre
+    if _yurameki_cache_load_pre not in load_handlers:
+        load_handlers.append(_yurameki_cache_load_pre)
 
 
 def unregister_cache_handler() -> None:
-    handlers = bpy.app.handlers.frame_change_post
-    if _yurameki_cache_frame_change in handlers:
-        handlers.remove(_yurameki_cache_frame_change)
+    for cache in tuple(_CACHE_REGISTRY.values()):
+        try:
+            obj = _cache_object(cache)
+            if obj is not None:
+                _write_local_points(obj, cache.restore_local_values)
+        except Exception:
+            pass
+    pre_handlers = bpy.app.handlers.frame_change_pre
+    if _yurameki_cache_frame_change_pre in pre_handlers:
+        pre_handlers.remove(_yurameki_cache_frame_change_pre)
+    post_handlers = bpy.app.handlers.frame_change_post
+    if _yurameki_cache_frame_change in post_handlers:
+        post_handlers.remove(_yurameki_cache_frame_change)
+    load_handlers = bpy.app.handlers.load_pre
+    if _yurameki_cache_load_pre in load_handlers:
+        load_handlers.remove(_yurameki_cache_load_pre)
+    _CACHE_REGISTRY.clear()
 
 
 class WarpJointSimulator:
@@ -1904,7 +2108,7 @@ class WarpJointSimulator:
                     device=self.device,
                 )
             if self.n_bends > 0 and bend_compliance >= 0.0:
-                for parity in (0, 1):
+                for color in range(4):
                     wp.launch(
                         _solve_bend_kernel,
                         dim=self.n_bends,
@@ -1913,7 +2117,7 @@ class WarpJointSimulator:
                             self.inv_mass,
                             self.bend_rest,
                             self.pps,
-                            parity,
+                            color,
                             float(bend_compliance),
                             float(dt),
                         ],
@@ -2239,8 +2443,8 @@ def simulate(
         raise ValueError("expected at least one Mesh collider")
     start_frame = int(start_frame)
     end_frame = int(end_frame)
-    if end_frame < start_frame:
-        raise ValueError("End Frame must be >= Start Frame")
+    if end_frame <= start_frame:
+        raise ValueError("End Frame must be > Start Frame")
     bake_mode = str(bake_mode).strip().upper()
     if bake_mode not in {"CACHE", "FINAL", "KEYFRAMES"}:
         bake_mode = "CACHE"
@@ -2267,6 +2471,7 @@ def simulate(
     max_keep_length_error_mm = 0.0
     success = False
     cache_path = ""
+    cache_restore_local_values = None
     target_worlds = {}
     offsets = {}
     global _CACHE_MUTED
@@ -2274,6 +2479,13 @@ def simulate(
     _CACHE_MUTED = True
 
     try:
+        previous_cache = get_runtime_cache(curves_obj)
+        if previous_cache is not None and _cache_object(previous_cache) is not None:
+            cache_restore_local_values = previous_cache.restore_local_values.copy()
+        else:
+            cache_restore_local_values = _read_local_points(curves_obj)
+        _write_local_points(curves_obj, cache_restore_local_values)
+        bpy.context.view_layer.update()
         clear_runtime_cache(curves_obj)
         scene.frame_set(start_frame)
         pps, n_strands = _uniform_points_per_strand(curves_obj)
@@ -2294,7 +2506,7 @@ def simulate(
         post_keep_contact_ttl = np.zeros(len(guide_indices), dtype=np.int32)
         body_fk_contact_ttl = np.zeros(n_strands, dtype=np.int32)
         body_hard_guard_obj = collider_objects[0]
-        body_hard_guard_seed = _head_seed_world(body_hard_guard_obj)
+        body_hard_guard_seed = None
         guide_keep_rest_lengths = None
         if keep_rest_lengths is not None:
             guide_keep_rest_lengths = np.ascontiguousarray(keep_rest_lengths[guide_indices], dtype=np.float32)
@@ -2313,76 +2525,14 @@ def simulate(
         prev_targets = sim_init.copy()
         current_sim_world = sim_init.copy()
         current_world = init_eval.copy()
-        if keep_rest_lengths is not None and keep_fallback_dirs is not None:
-            current_world, keep_error = _keep_length_fk(
-                current_world,
-                pps,
-                keep_rest_lengths,
-                keep_fallback_dirs,
-            )
-            max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
-            current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
-            simulator.set_positions(current_sim_world)
-            prev_targets = current_sim_world.copy()
-        current_world, guard_fixed, guard_strands = _apply_body_seed_hard_guard(
-            current_world,
-            body_hard_guard_obj,
-            float(collision_margin_m),
-            body_hard_guard_seed,
-            points_per_strand=pps,
-        )
-        body_hard_guard_points_total += guard_fixed
-        body_zero_strands = guard_strands.astype(np.int32, copy=True)
-        if keep_rest_lengths is not None and keep_fallback_dirs is not None:
-            initial_fk_active = np.ones(n_strands, dtype=np.int32)
-            current_world, fk_stats, fk_strands = _apply_body_fk_hard_repair(
-                current_world,
-                pps,
-                keep_rest_lengths,
-                keep_fallback_dirs,
-                body_hard_guard_obj,
-                float(collision_margin_m),
-                body_hard_guard_seed,
-                root_locked_points=locked,
-                active_strands=initial_fk_active,
-            )
-            if fk_stats.points:
-                body_fk_repair_strands_total += fk_stats.strands
-                body_fk_repair_points_total += fk_stats.points
-                body_fk_escape_points_total += fk_stats.escape_points
-                body_fk_failed_points_total += fk_stats.failed_points
-                body_fk_contact_ttl[fk_strands != 0] = BODY_FK_REPAIR_TTL_FRAMES
-                body_zero_strands |= fk_strands.astype(np.int32, copy=False)
-        if np.any(body_zero_strands):
-            guide_zero = body_zero_strands[guide_indices].astype(np.int32, copy=False)
-            body_fk_velocity_zeroed_total += simulator.zero_strand_velocities(guide_zero)
-        if guard_fixed:
-            current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
-            simulator.set_positions(current_sim_world)
-            prev_targets = current_sim_world.copy()
-        elif keep_rest_lengths is not None and keep_fallback_dirs is not None and body_fk_repair_points_total:
-            current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
-            simulator.set_positions(current_sim_world)
-            prev_targets = current_sim_world.copy()
         baked = {start_frame: current_world.copy()}
-        show_error = _show_sim_frame(
-            curves_obj,
-            start_frame,
-            current_world,
-            offset=offsets[start_frame],
-            pps=pps,
-            keep_rest_lengths=keep_rest_lengths,
-            keep_fallback_dirs=keep_fallback_dirs,
-            body_hard_guard_obj=body_hard_guard_obj,
-            body_hard_guard_margin=float(collision_margin_m),
-            body_hard_guard_seed=body_hard_guard_seed,
-            body_fk_root_locked_points=locked,
-        )
-        max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
+        scene.frame_set(start_frame)
+        _force_viewport_refresh()
 
         dt_frame = float(scene.render.fps_base) / max(float(scene.render.fps), 1.0)
         for frame in frames[1:]:
             scene.frame_set(frame)
+            body_hard_guard_seed = _head_seed_world(body_hard_guard_obj)
             eval_world = target_worlds[frame]
             eval_sim_world = np.ascontiguousarray(eval_world[guide_point_indices], dtype=np.float32)
             target_move_mm = _target_motion_mm(prev_targets, eval_sim_world, simulator.inv_mass_np)
@@ -2443,6 +2593,7 @@ def simulate(
                     pps,
                     keep_rest_lengths,
                     keep_fallback_dirs,
+                    root_locked_points=locked,
                 )
                 max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
                 current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
@@ -2475,6 +2626,7 @@ def simulate(
                             pps,
                             keep_rest_lengths,
                             keep_fallback_dirs,
+                            root_locked_points=locked,
                         )
                         max_keep_length_error_mm = max(max_keep_length_error_mm, keep_error)
                         current_sim_world = np.ascontiguousarray(current_world[guide_point_indices], dtype=np.float32)
@@ -2491,6 +2643,7 @@ def simulate(
                 float(collision_margin_m),
                 body_hard_guard_seed,
                 points_per_strand=pps,
+                root_locked_points=locked,
             )
             body_hard_guard_points_total += guard_fixed
             body_fk_points_this_frame = 0
@@ -2559,7 +2712,6 @@ def simulate(
                 keep_fallback_dirs=keep_fallback_dirs,
                 body_hard_guard_obj=body_hard_guard_obj,
                 body_hard_guard_margin=float(collision_margin_m),
-                body_hard_guard_seed=body_hard_guard_seed,
                 body_fk_root_locked_points=locked,
             )
         elif bake_mode == "CACHE":
@@ -2568,12 +2720,12 @@ def simulate(
                 frames,
                 baked,
                 offsets,
+                restore_local_values=cache_restore_local_values,
                 pps=pps,
                 keep_rest_lengths=keep_rest_lengths,
                 keep_fallback_dirs=keep_fallback_dirs,
                 body_hard_guard_obj=body_hard_guard_obj,
                 body_hard_guard_margin=float(collision_margin_m),
-                body_hard_guard_seed=body_hard_guard_seed,
                 body_fk_root_locked_points=locked,
             )
             cache_path = cache.path

@@ -2,7 +2,7 @@
 
 Status: public release.
 
-Current version: 0.7.14.
+Current version: 0.7.15.
 
 Branch: custom-cpp-cuda.
 
@@ -28,7 +28,28 @@ release extension package.
   movement per substep and `Max Substeps` caps the result.
 - Body collision uses the filled Body proxy. Clothes are evaluated directly each
   frame so Marvelous Designer Alembic / Mesh Sequence Cache meshes can update.
-- Latest package target: source tree `0.7.14`; no native DLL build is required.
+- Latest package target: source tree `0.7.15`; no native DLL build is required.
+
+## 0.7.15 constraint and runtime cache correctness
+
+- The selected start frame is now an unchanged initial hair state. XPBD,
+  `KEEP LENGTH`, Body guard, and FK correction begin at the following frame;
+  the end frame must be greater than the start frame.
+- The Head seed used by Body correction is evaluated on each simulated frame
+  instead of being retained from the target pre-read frame.
+- Changed two-joint bend constraints from two parity launches to four
+  non-conflicting colors. Bend edges `i -> i+2` no longer share writable points
+  within one Warp launch.
+- `KEEP LENGTH` now preserves the complete root-locked prefix and rebuilds only
+  free joints. The Body seed hard guard also skips locked joints.
+- Runtime caches store the original local positions and restore them in
+  `frame_change_pre`; cached values are applied in `frame_change_post` only for
+  frames contained in the cache.
+- Runtime caches now track Blend ownership and Curves strand spans. File loads,
+  Save As operations, point-count changes, and curve span layout changes
+  invalidate stale caches without raising persistent handler exceptions.
+- Cache filenames include the Blend name, and cache files validate their Blend,
+  object, data-block, and topology ownership before runtime playback.
 
 ## 0.7.14 English manifest and CUDA iteration default
 
