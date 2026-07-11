@@ -1,4 +1,4 @@
-# Yurameki 0.7.15
+# Yurameki 0.7.17
 
 Yurameki is a Blender extension for simulating VR-character-style long straight
 hair with NVIDIA Warp.
@@ -19,7 +19,7 @@ the hair, then Yurameki simulates it.
 Install the release ZIP through Blender's extension/add-on installer:
 
 ```text
-dist/yurameki-0.7.15.zip
+dist/yurameki-0.7.17.zip
 ```
 
 ## Direction
@@ -37,6 +37,24 @@ dist/yurameki-0.7.15.zip
   Alembic / Mesh Sequence Cache clothing can update per frame.
 
 ## UI
+
+### Yurameki Assistant
+
+`Yurameki Assistant` is a session-based conversation for tuning the current
+simulation settings. Register an OpenAI API key once; on Windows it is stored as
+a generic credential named `Yurameki/OpenAI API Key` in Credential Manager and
+is never written to the Blend file or Yurameki configuration. Enter requests
+such as `make it softer but settle sooner`, then press `Send`. The assistant
+uses `gpt-5.4-nano` and applies only validated, allow-listed Warp and Collision
+parameters. API use is billed by OpenAI according to the account behind the key.
+
+The conversation and setting snapshots live only for the current Blender
+session. `Previous` restores the state before the last assistant change, and
+phrases such as `前の方がよかった` do the same without making an API request.
+`New` clears the conversation and its undo history. Requests run in the
+background so Blender's interface remains responsive. Current parameter values,
+their documented ranges, and recent conversation text are sent to OpenAI; mesh
+geometry, object names, and the API key are not included in the request body.
 
 The panel has three command buttons:
 
@@ -167,6 +185,18 @@ matched frame 1 with maximum absolute total-strand error below `0.001 mm`.
 The release package is Warp-only. The retired 0.6.x native CUDA cylinder-chain
 implementation is kept in Git history, not in the current source tree or build
 package.
+
+## 0.7.17 Release
+
+- Refresh the Blender UI when an Assistant background response finishes, so
+  conversational replies appear immediately without unrelated user input.
+
+## 0.7.16 Release
+
+- Added the conversational Yurameki Assistant for validated natural-language
+  tuning with `gpt-5.4-nano` through the OpenAI Responses API.
+- Added secure OpenAI API-key storage in Windows Credential Manager, background
+  requests, session conversation history, and previous-setting restoration.
 
 ## 0.7.15 Release
 

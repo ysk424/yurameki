@@ -8,6 +8,8 @@ import tomllib
 import bpy
 from bpy.types import Panel
 
+from . import assistant
+
 
 def _version():
     try:
@@ -62,6 +64,26 @@ class YURAMEKI_PT_main(Panel):
         _operator(col, "yurameki.check_hair", icon="CHECKMARK")
         _prop(col, wm, "yurameki_points_per_strand")
         status = getattr(wm, "yurameki_hair_check_status", "")
+        if status:
+            _label(col, status)
+
+        box = layout.box()
+        _label(box, "Yurameki Assistant")
+        col = box.column(align=True)
+        key_text = "API Key: Configured" if assistant.has_api_key() else "API Key: Not configured"
+        _operator(col, "yurameki.set_api_key", text=key_text, icon="KEYINGSET")
+        for message in assistant.messages()[-6:]:
+            prefix = "You: " if message["role"] == "user" else "AI: "
+            text = prefix + message["text"]
+            for start in range(0, len(text), 38):
+                _label(col, text[start:start + 38])
+        _prop(col, wm, "yurameki_assistant_input")
+        row = col.row(align=True)
+        row.enabled = not assistant.is_busy()
+        _operator(row, "yurameki.assistant_send", text="Send", icon="PLAY")
+        _operator(row, "yurameki.assistant_undo", text="Previous", icon="LOOP_BACK")
+        _operator(row, "yurameki.assistant_clear", text="New", icon="FILE_REFRESH")
+        status = getattr(wm, "yurameki_assistant_status", "")
         if status:
             _label(col, status)
 

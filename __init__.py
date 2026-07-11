@@ -17,7 +17,7 @@ from bpy.props import (
 )
 from bpy.types import Operator, WindowManager
 
-from . import ui
+from . import assistant, ui
 
 
 def _load_defaults():
@@ -329,6 +329,7 @@ _classes = (
     YURAMEKI_OT_pick_clothes,
     YURAMEKI_OT_simulate,
     YURAMEKI_OT_bake_cache,
+    *assistant.CLASSES,
 )
 
 
@@ -361,6 +362,8 @@ _PROP_NAMES = (
     "yurameki_guide_decimation",
     "yurameki_keep_length",
     "yurameki_sim_bake_mode",
+    "yurameki_assistant_input",
+    "yurameki_assistant_status",
 )
 
 
@@ -586,6 +589,17 @@ def register():
             default=str(defaults.get("SIM_BAKE_MODE", "CACHE")),
             options={"SKIP_SAVE"},
         )
+        WindowManager.yurameki_assistant_input = StringProperty(
+            name="Message",
+            description="Describe the motion or correction you want",
+            default="",
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_assistant_status = StringProperty(
+            name="Assistant Status",
+            default="Ready",
+            options={"SKIP_SAVE"},
+        )
 
         ui.register()
         ui_registered = True
@@ -605,6 +619,7 @@ def register():
 
 
 def unregister():
+    assistant.unregister_runtime()
     mod = sys.modules.get(__name__ + "._warp_sim")
     if mod is not None:
         try:

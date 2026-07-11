@@ -2,7 +2,7 @@
 
 Status: public release.
 
-Current version: 0.7.15.
+Current version: 0.7.17.
 
 Branch: custom-cpp-cuda.
 
@@ -11,6 +11,10 @@ query APIs. The native C++ CUDA cylinder-chain path is no longer part of the
 release extension package.
 
 ## Current State
+
+- The session-only Yurameki Assistant uses strict OpenAI structured output,
+  allow-listed/range-checked settings, background requests, and deterministic
+  local setting snapshots. Its API key is stored in Windows Credential Manager.
 
 - Yurameki expects hair already planted and settled by Tokoya.
 - The panel exposes `Check`, `Simulate`, and `Bake Cache` command buttons.
