@@ -1,8 +1,8 @@
 schema_version = "1.0.0"
 
-id = "yurameki"
-version = "0.7.17"
-name = "Yurameki"
+id = "yurameki2"
+version = "0.1.0"
+name = "Yurameki2"
 tagline = "NVIDIA Warp long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
 type = "add-on"
