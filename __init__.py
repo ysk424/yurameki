@@ -1,4 +1,4 @@
-"""Yurameki 0.7.x -- NVIDIA Warp long straight-hair simulator."""
+"""Yurameki -- NVIDIA Warp elastic-rod long straight-hair simulator."""
 
 from __future__ import annotations
 

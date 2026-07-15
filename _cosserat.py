@@ -1,4 +1,4 @@
-"""Stable Cosserat Rods elastic-rod solver core for Yurameki2.
+"""Stable Cosserat Rods elastic-rod solver core for Yurameki.
 
 This module replaces the previous XPBD distance/bend constraint solve plus the
 FK "KEEP LENGTH" reconnection with a genuine Cosserat elastic-rod solver.

@@ -1,7 +1,8 @@
 # Yurameki Warp Notes
 
-Status: public release. Current version: 0.2.8 (Yurameki2 line). Branch:
-`custom-cpp-cuda`.
+Status: public release. Current version: 1.0.0 (Yurameki). Branch:
+`custom-cpp-cuda`. Yurameki 1.0.0 is the former "Yurameki2" line promoted back to
+the main Yurameki name; the addon id is `yurameki`.
 
 ## Interactive bake + workflow trim (0.2.8)
 
