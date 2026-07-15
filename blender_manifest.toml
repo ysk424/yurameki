@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki2"
-version = "0.2.1"
+version = "0.2.8"
 name = "Yurameki2"
 tagline = "NVIDIA Warp elastic-rod long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
@@ -15,17 +15,12 @@ tags = ["Physics"]
 
 platforms = ["windows-x64"]
 
-[permissions]
-network = "Send setting values and conversation text to the OpenAI API"
-
 [build]
 paths = [
     "__init__.py",
     "ui.py",
-    "assistant.py",
     "_warp_sim.py",
     "_cosserat.py",
-    "collider_proxy.py",
     "yurameki_defaults.json",
     "README.md",
     "DEVELOPMENT_NOTES.md",

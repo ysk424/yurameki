@@ -241,6 +241,7 @@ def cosserat_orientation_kernel(
     damping: float,
     relaxation: float,
     max_omega: float,
+    bend_root_boost: float,
 ):
     e = wp.tid()
     segs = points_per_strand - 1
@@ -252,6 +253,10 @@ def cosserat_orientation_kernel(
     i = strand * points_per_strand + local_seg
     j = i + 1
     q = orient[e]
+    # Option 1: stiffen bending toward the root (linear ramp) where the
+    # cantilever bending moment is highest, so curvature distributes over several
+    # joints instead of concentrating -- and buckling -- at the first free one.
+    k_bt_eff = k_bt * (1.0 + bend_root_boost * (1.0 - float(local_seg) / float(segs)))
 
     a = wp.mat33(
         0.0, 0.0, 0.0,
@@ -288,8 +293,8 @@ def cosserat_orientation_kernel(
         # d(Im(conj(q) qn))/d(omega) = 0.5 * (-dw I + skew(dv)) for q <- q*exp(w)
         jr = 0.5 * (-dw * ident + _skew(dv))
         jrt = wp.transpose(jr)
-        a = a + k_bt * (jrt * jr)
-        rhs = rhs - k_bt * (jrt * b_r)
+        a = a + k_bt_eff * (jrt * jr)
+        rhs = rhs - k_bt_eff * (jrt * b_r)
 
     # --- bend / twist toward the previous segment (pair e-1, e) ------------- #
     if local_seg > 0:
@@ -301,8 +306,8 @@ def cosserat_orientation_kernel(
         # d(Im(conj(qp) q))/d(omega) = 0.5 * (gw I + skew(gv)) for q <- q*exp(w)
         jl = 0.5 * (gw * ident + _skew(gv))
         jlt = wp.transpose(jl)
-        a = a + k_bt * (jlt * jl)
-        rhs = rhs - k_bt * (jlt * b_l)
+        a = a + k_bt_eff * (jlt * jl)
+        rhs = rhs - k_bt_eff * (jlt * b_l)
 
     # --- damped Gauss-Newton solve and body-frame update -------------------- #
     a = a + damping * ident
@@ -316,6 +321,106 @@ def cosserat_orientation_kernel(
         omega = omega * (max_omega / mag)
 
     orient[e] = wp.normalize(q * _exp_quat(omega))
+
+
+# --------------------------------------------------------------------------- #
+# Buckling resistance: position-space angle constraint (anti fold-back).
+# --------------------------------------------------------------------------- #
+@wp.kernel
+def cosserat_buckle_kernel(
+    predicted: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+    points_per_strand: int,
+    color: int,
+    cos_threshold: float,
+    stiffness: float,
+):
+    """Option 2: a one-sided angle constraint on three consecutive points that
+    resists a strand folding back on itself. Active only when the bend cosine
+    ``cos(theta) = t_hat_i . t_hat_{i+1}`` drops below ``cos_threshold``; it then
+    applies a length-preserving (perpendicular) position correction that opens
+    the angle. Uses the position-space cosine directly (a dot product -- no acos,
+    no lookup table). 3-colour over the joint index so one launch never writes a
+    point that another thread in the same launch also writes.
+    """
+    tid = wp.tid()
+    interior = points_per_strand - 2
+    if interior <= 0:
+        return
+    strand = tid // interior
+    local = tid % interior              # 0 .. pps-3  (joint at point local+1)
+    if (local + 1) % 3 != color:
+        return
+    ci = strand * points_per_strand + local + 1
+    w0 = inv_mass[ci - 1]
+    w1 = inv_mass[ci]
+    w2 = inv_mass[ci + 1]
+    if w0 + w1 + w2 <= 0.0:
+        return
+    p0 = predicted[ci - 1]
+    p1 = predicted[ci]
+    p2 = predicted[ci + 1]
+    a = p1 - p0
+    b = p2 - p1
+    la = wp.length(a)
+    lb = wp.length(b)
+    if la < 1.0e-9 or lb < 1.0e-9:
+        return
+    ah = a / la
+    bh = b / lb
+    cosv = wp.dot(ah, bh)
+    if cosv >= cos_threshold:
+        return  # not folding past the threshold -- leave the natural bend alone
+    # C = cos_threshold - cos (> 0 when folding); gradients wrt the three points.
+    # d(cos)/da and d(cos)/db are perpendicular to a,b, so the fix preserves length.
+    dcos_da = (bh - cosv * ah) / la
+    dcos_db = (ah - cosv * bh) / lb
+    g0 = dcos_da
+    g1 = dcos_db - dcos_da
+    g2 = -dcos_db
+    denom = w0 * wp.dot(g0, g0) + w1 * wp.dot(g1, g1) + w2 * wp.dot(g2, g2)
+    if denom < 1.0e-12:
+        return
+    dl = -(cos_threshold - cosv) / denom
+    predicted[ci - 1] = p0 + (stiffness * w0 * dl) * g0
+    predicted[ci] = p1 + (stiffness * w1 * dl) * g1
+    predicted[ci + 1] = p2 + (stiffness * w2 * dl) * g2
+
+
+# --------------------------------------------------------------------------- #
+# Strain-rate (internal viscosity) velocity damping.
+# --------------------------------------------------------------------------- #
+@wp.kernel
+def _internal_damp_kernel(
+    vel_in: wp.array(dtype=wp.vec3),
+    vel_out: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+    points_per_strand: int,
+    mu: float,
+):
+    """Velocity Laplacian along each strand between free joints (a viscoelastic
+    rod's internal viscosity). It damps the internal *deformation* velocity --
+    ringing, jitter, and frizz -- while preserving the bulk motion that follows
+    the kinematic root and gravity: a spatially smooth (rigid/translational)
+    velocity field is a fixed point of the Laplacian, so only the high-frequency
+    part decays. Only free-free joint pairs are coupled, so a strand is never
+    damped toward the stored-zero kinematic root velocity.
+
+    Jacobi form (reads the snapshot ``vel_in``, writes ``vel_out``): because each
+    free-free edge contributes equal and opposite corrections to its two joints,
+    the per-strand mean velocity -- the bulk momentum -- is exactly preserved.
+    """
+    i = wp.tid()
+    if inv_mass[i] <= 0.0:
+        vel_out[i] = vel_in[i]
+        return
+    local = i % points_per_strand
+    lap = wp.vec3(0.0, 0.0, 0.0)
+    if local > 0 and inv_mass[i - 1] > 0.0:
+        lap = lap + (vel_in[i - 1] - vel_in[i])
+    if local < points_per_strand - 1 and inv_mass[i + 1] > 0.0:
+        lap = lap + (vel_in[i + 1] - vel_in[i])
+    vel_out[i] = vel_in[i] + mu * lap
 
 
 # --------------------------------------------------------------------------- #

@@ -8,8 +8,6 @@ import tomllib
 import bpy
 from bpy.types import Panel
 
-from . import assistant
-
 
 def _version():
     try:
@@ -61,31 +59,7 @@ class YURAMEKI_PT_main(Panel):
         row = col.row(align=True)
         _prop(row, wm, "yurameki_clothes_obj")
         _operator(row, "yurameki.pick_clothes", text="", icon="EYEDROPPER")
-        _operator(col, "yurameki.check_hair", icon="CHECKMARK")
         _prop(col, wm, "yurameki_points_per_strand")
-        status = getattr(wm, "yurameki_hair_check_status", "")
-        if status:
-            _label(col, status)
-
-        box = layout.box()
-        _label(box, "Yurameki Assistant")
-        col = box.column(align=True)
-        key_text = "API Key: Configured" if assistant.has_api_key() else "API Key: Not configured"
-        _operator(col, "yurameki.set_api_key", text=key_text, icon="KEYINGSET")
-        for message in assistant.messages()[-6:]:
-            prefix = "You: " if message["role"] == "user" else "AI: "
-            text = prefix + message["text"]
-            for start in range(0, len(text), 38):
-                _label(col, text[start:start + 38])
-        _prop(col, wm, "yurameki_assistant_input")
-        row = col.row(align=True)
-        row.enabled = not assistant.is_busy()
-        _operator(row, "yurameki.assistant_send", text="Send", icon="PLAY")
-        _operator(row, "yurameki.assistant_undo", text="Previous", icon="LOOP_BACK")
-        _operator(row, "yurameki.assistant_clear", text="New", icon="FILE_REFRESH")
-        status = getattr(wm, "yurameki_assistant_status", "")
-        if status:
-            _label(col, status)
 
         box = layout.box()
         _label(box, "Simulate")
@@ -95,15 +69,25 @@ class YURAMEKI_PT_main(Panel):
         _prop(col, wm, "yurameki_sim_bake_mode")
         _prop(col, wm, "yurameki_guide_decimation")
         _prop(col, wm, "yurameki_keep_length")
-        _operator(col, "yurameki.simulate", icon="RENDER_ANIMATION")
+        running = getattr(wm, "yurameki_sim_running", False)
+        sim_row = col.row(align=True)
+        sim_row.enabled = not running
+        _operator(sim_row, "yurameki.simulate", icon="RENDER_ANIMATION")
+        if running:
+            _operator(col, "yurameki.stop_simulate", icon="CANCEL")
+        status = getattr(wm, "yurameki_sim_status", "")
+        if status:
+            _label(col, status)
         _operator(col, "yurameki.bake_cache", icon="ACTION")
 
         box = layout.box()
         _label(box, "Elastic Rod")
         col = box.column(align=True)
         _prop(col, wm, "yurameki_root_locked_points")
+        _prop(col, wm, "yurameki_adaptive_root_lock")
         _prop(col, wm, "yurameki_gravity")
         _prop(col, wm, "yurameki_damping")
+        _prop(col, wm, "yurameki_internal_damping")
         _prop(col, wm, "yurameki_max_velocity_mps")
         _prop(col, wm, "yurameki_particle_mass_g")
         _prop(col, wm, "yurameki_bend_stiffness_log10")
@@ -116,6 +100,7 @@ class YURAMEKI_PT_main(Panel):
         _prop(col, wm, "yurameki_collision_search_mm")
         _prop(col, wm, "yurameki_collision_max_correction_mm")
         _prop(col, wm, "yurameki_collision_response")
+        _prop(col, wm, "yurameki_collision_smoothing")
         _prop(col, wm, "yurameki_collision_velocity_damping")
         _prop(col, wm, "yurameki_collision_passes")
         _prop(col, wm, "yurameki_post_collision_iterations")

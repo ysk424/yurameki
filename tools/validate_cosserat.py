@@ -478,6 +478,39 @@ def main():
           f"   nan={nan}  -> {'PASS' if ok else 'FAIL'}")
     fails += 0 if ok else 1
 
+    # ---- Test 6: internal (strain-rate) velocity damping ------------------- #
+    print("\n[6] Internal damping: preserves bulk velocity, damps jitter")
+    pps = 12
+    invm6 = np.ones(pps, np.float32); invm6[:3] = 0.0
+    im6 = wp.array(invm6, dtype=float, device=device)
+    tmp6 = wp.zeros(pps, dtype=wp.vec3, device=device)
+
+    def apply_damp(vel_np, mu, sweeps):
+        v = wp.array(vel_np.astype(np.float32), dtype=wp.vec3, device=device)
+        for _ in range(sweeps):
+            wp.copy(tmp6, v)
+            wp.launch(cr._internal_damp_kernel, dim=pps, inputs=[tmp6, v, im6, pps, float(mu)], device=device)
+        wp.synchronize()
+        return v.numpy()
+
+    # (a) a spatially uniform velocity is a fixed point -> bulk motion preserved
+    vel_u = np.tile([1.0, 0.0, 0.0], (pps, 1))
+    out_u = apply_damp(vel_u, 0.4, 30)
+    bulk_change = float(np.max(np.abs(out_u[3:] - vel_u[3:])))
+    # (b) mean + alternating jitter -> jitter decays, per-strand mean is exact
+    vel_j = np.array([[0.5, 0.0, 0.0]] * pps, dtype=float)
+    for i in range(pps):
+        vel_j[i, 2] = (-1.0) ** i
+    jit0 = float(np.std(vel_j[3:], axis=0).sum())
+    mean0 = vel_j[3:].mean(axis=0)
+    out_j = apply_damp(vel_j, 0.4, 30)
+    jit1 = float(np.std(out_j[3:], axis=0).sum())
+    mean_drift = float(np.linalg.norm(out_j[3:].mean(axis=0) - mean0))
+    ok = (bulk_change < 1e-5) and (jit1 < 0.1 * jit0) and (mean_drift < 1e-5)
+    print(f"    uniform-vel change = {bulk_change:.2e} (bulk preserved)   "
+          f"jitter {jit0:.3f} -> {jit1:.3f}   mean drift = {mean_drift:.2e}  -> {'PASS' if ok else 'FAIL'}")
+    fails += 0 if ok else 1
+
     print(f"\n=== {'ALL TESTS PASSED' if fails == 0 else str(fails) + ' TEST(S) FAILED'} ===")
     return 1 if fails else 0
 

@@ -1,4 +1,4 @@
-# Yurameki2 0.2.1
+# Yurameki2 0.2.8
 
 Yurameki is a Blender extension for simulating VR-character-style long straight
 hair with NVIDIA Warp. Each strand is solved as a Stable Cosserat elastic rod:
@@ -22,7 +22,7 @@ the hair, then Yurameki simulates it.
 Install the release ZIP through Blender's extension/add-on installer:
 
 ```text
-dist/yurameki2-0.2.1.zip
+dist/yurameki2-0.2.8.zip
 ```
 
 ## Direction
@@ -41,24 +41,6 @@ dist/yurameki2-0.2.1.zip
   Alembic / Mesh Sequence Cache clothing can update per frame.
 
 ## UI
-
-### Yurameki Assistant
-
-`Yurameki Assistant` is a session-based conversation for tuning the current
-simulation settings. Register an OpenAI API key once; on Windows it is stored as
-a generic credential named `Yurameki/OpenAI API Key` in Credential Manager and
-is never written to the Blend file or Yurameki configuration. Enter requests
-such as `make it softer but settle sooner`, then press `Send`. The assistant
-uses `gpt-5.4-nano` and applies only validated, allow-listed Warp and Collision
-parameters. API use is billed by OpenAI according to the account behind the key.
-
-The conversation and setting snapshots live only for the current Blender
-session. `Previous` restores the state before the last assistant change, and
-phrases such as `前の方がよかった` do the same without making an API request.
-`New` clears the conversation and its undo history. Requests run in the
-background so Blender's interface remains responsive. Current parameter values,
-their documented ranges, and recent conversation text are sent to OpenAI; mesh
-geometry, object names, and the API key are not included in the request body.
 
 The panel has three command buttons:
 
@@ -106,8 +88,12 @@ Every control has a tooltip in the N-panel. The three that shape hair motion are
   straighter; lower is floppier and whips more.
 - `Particle Mass g`: momentum. Lower is lighter and snappier and stores less
   energy (less overshoot); higher is heavier and swings more.
-- `Damping`: how quickly motion settles.
-
+- `Damping`: how quickly *all* motion settles (global velocity damping).
+- `Internal Damping`: strain-rate (viscoelastic) damping *inside* a strand. It
+  removes ringing, jitter, and frizz but keeps the bulk follow-through and the
+  gravity fall, so hair moves passively -- driven by the head and gravity, not by
+  its own stored energy. Prefer this over raising `Damping`, which also kills the
+  wanted motion.
 Stretch is fixed -- the rod is inextensible -- so there is no stretch knob.
 Collision, substep, and workflow controls are unchanged from the Warp path.
 

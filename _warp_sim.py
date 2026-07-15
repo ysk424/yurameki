@@ -49,6 +49,27 @@ STRETCH_STIFFNESS = 1.0e4   # k_ss (stretch/shear), fixed; rod stays at rest len
 ORIENT_GN_DAMPING = 1.0e-7  # Levenberg damping on the 3x3 orientation solve
 ORIENT_RELAXATION = 1.0     # relaxation on each quaternion angular update
 ORIENT_MAX_OMEGA = 0.5      # clamp on |omega| per orientation sweep (radians)
+BEND_ROOT_BOOST = 4.0       # Option 1: extra bend stiffness at the root (linear ramp to tip)
+BUCKLE_THRESHOLD = 0.0      # Option 2: buckle constraint fires when the bend cosine drops below this
+COLLISION_SMOOTH_WEIGHT = 0.5   # anti-kink: Jacobi weight when diffusing the collision push-out along a strand
+COLLISION_SMOOTH_MAX_PASSES = 8 # anti-kink: passes at Collision Smoothing = 1.0 (0 disables)
+
+# Adaptive root lock: on the side the head is advancing toward, lock (make
+# kinematic) each strand's joints all the way down to the earlobe line so they
+# ride the head instead of being headbutted and flung. The trigger is the head's
+# *direction* of motion only -- the magnitude (speed/acceleration) is ignored, so
+# even a slow head turn locks the leading side (a strand can fold badly during
+# slow head motion, so a speed gate would miss it). The head advance direction
+# ``v_head`` (head-bone tip velocity, world, EMA-smoothed) defines a 3D cone:
+# strands whose root direction falls inside ADAPTIVE_LOCK_INNER_DEG of ``v_head``
+# get the full earlobe lock, with a soft skirt out to ADAPTIVE_LOCK_OUTER_DEG so
+# the lock set does not pop hard at the boundary. "Earlobe line" = the head-local
+# up-height of the jaw-hinge/ear anchor (`_ear_offset_world`); the lock is the
+# contiguous run of root-side joints above it, so nothing assumes a fixed facing.
+ADAPTIVE_LOCK_INNER_DEG = 75.0   # <= this half-angle from v_head: full earlobe lock
+ADAPTIVE_LOCK_OUTER_DEG = 90.0   # soft skirt to the hemisphere edge, then baseline
+ADAPTIVE_LOCK_MIN_SPEED = 0.003  # m/s: head must move at least this to have a direction
+ADAPTIVE_LOCK_VHEAD_SMOOTH = 0.5 # EMA on v_head direction (0 = raw, ->1 = smoother)
 
 
 @dataclass
@@ -76,6 +97,9 @@ class WarpSimStats:
     guide_decimation: int
     points_per_strand: int
     root_locked_points: int
+    adaptive_root_lock: bool
+    adaptive_lock_max_points: int
+    adaptive_lock_strand_frames: int
     frame_steps: int
     total_substeps: int
     max_substeps: int
@@ -192,25 +216,47 @@ def _predict_kernel(
 @wp.kernel
 def _derive_velocity_kernel(
     pos: wp.array(dtype=wp.vec3),
+    pre_collide: wp.array(dtype=wp.vec3),
     predicted: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
-    contact_mask: wp.array(dtype=wp.int32),
+    contact_strands: wp.array(dtype=wp.int32),
+    points_per_strand: int,
     dt: float,
     damping: float,
     max_velocity: float,
     collision_velocity_damping: float,
+    collider_moving: int,
 ):
     i = wp.tid()
     if inv_mass[i] <= 0.0:
         vel[i] = wp.vec3(0.0, 0.0, 0.0)
     else:
-        v = (predicted[i] - pos[i]) / dt * (1.0 - damping)
+        is_contact = contact_strands[i // points_per_strand]
+        # Whether this contact rides a *moving* collider. A push-out against a
+        # static body is a spurious position correction and must be kept out of
+        # the velocity (else ~1 m/s per 5 mm push flings the stiff rod) -- so we
+        # derive from the pre-collision position. But when the collider itself is
+        # advancing into the hair across substeps, the push-out *is* the body's
+        # real motion, and the contact point must ride it (acquire the body's
+        # velocity), so we derive from the pushed position instead. Without this
+        # per-substep correction, finer substeps do not converge: the point is
+        # pushed out, falls back toward pre_collide, and is pushed again (pumping).
+        ride = int(0)
+        if collider_moving != 0 and is_contact != 0:
+            ride = 1
+        src = pre_collide[i]
+        if ride == 1:
+            src = predicted[i]
+        v = (src - pos[i]) / dt * (1.0 - damping)
         if max_velocity > 0.0:
             speed = wp.length(v)
             if speed > max_velocity and speed > 1.0e-9:
                 v = v / speed * max_velocity
-        if contact_mask[i] != 0:
+        # Static-collider contacts: damp the whole pushed strand to settle it.
+        # Moving-collider contacts already carry the body's real velocity, so
+        # damping them would fight the ride -- leave those alone.
+        if ride == 0 and is_contact != 0:
             contact_keep = 1.0 - collision_velocity_damping
             if contact_keep < 0.0:
                 contact_keep = 0.0
@@ -225,12 +271,109 @@ def _clear_contact_mask_kernel(contact_mask: wp.array(dtype=wp.int32)):
 
 
 @wp.kernel
+def _mark_strand_contacts(
+    contact_mask: wp.array(dtype=wp.int32),
+    contact_strands: wp.array(dtype=wp.int32),
+    points_per_strand: int,
+):
+    # Flag a strand if any of its joints was pushed by collision this substep.
+    i = wp.tid()
+    if contact_mask[i] != 0:
+        contact_strands[i // points_per_strand] = 1
+
+
+@wp.kernel
 def _commit_kernel(
     pos: wp.array(dtype=wp.vec3),
     predicted: wp.array(dtype=wp.vec3),
 ):
     i = wp.tid()
     pos[i] = predicted[i]
+
+
+# --- Anti-kink collision distribution -------------------------------------
+# A collision push-out is applied per point. On a scalp-adjacent strand the
+# body pushes one interior joint out much more than its neighbours, and since
+# the rod is nearly inextensible that local bump becomes a sharp bend (a kink)
+# at that joint which the weak bend stiffness cannot relax before the next
+# substep re-applies it. Instead of pushing each point independently, capture
+# the push-out as a correction field along the strand and diffuse it toward the
+# neighbours (locked points hold zero, anchoring the smoothing at the root), so
+# the strand rides out as a smooth bump. Diffusion only moves points further out
+# (never into the body), so it cannot add penetration.
+@wp.kernel
+def _corr_capture_kernel(
+    before: wp.array(dtype=wp.vec3),
+    predicted: wp.array(dtype=wp.vec3),
+    corr: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+):
+    i = wp.tid()
+    if inv_mass[i] == 0.0:
+        corr[i] = wp.vec3(0.0, 0.0, 0.0)
+    else:
+        corr[i] = predicted[i] - before[i]
+
+
+@wp.kernel
+def _corr_smooth_kernel(
+    corr_in: wp.array(dtype=wp.vec3),
+    corr_out: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+    points_per_strand: int,
+    weight: float,
+):
+    i = wp.tid()
+    if inv_mass[i] == 0.0:
+        corr_out[i] = wp.vec3(0.0, 0.0, 0.0)
+        return
+    pps = points_per_strand
+    local = i % pps
+    ci = corr_in[i]
+    nsum = wp.vec3(0.0, 0.0, 0.0)
+    ncount = float(0.0)
+    if local > 0:
+        nsum = nsum + corr_in[i - 1]
+        ncount = ncount + 1.0
+    if local < pps - 1:
+        nsum = nsum + corr_in[i + 1]
+        ncount = ncount + 1.0
+    if ncount > 0.0:
+        corr_out[i] = (1.0 - weight) * ci + weight * (nsum / ncount)
+    else:
+        corr_out[i] = ci
+
+
+@wp.kernel
+def _corr_apply_kernel(
+    before: wp.array(dtype=wp.vec3),
+    corr: wp.array(dtype=wp.vec3),
+    predicted: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array(dtype=float),
+):
+    i = wp.tid()
+    if inv_mass[i] != 0.0:
+        predicted[i] = before[i] + corr[i]
+
+
+# --- Collider substep interpolation ---------------------------------------
+# The collider (body) mesh is rebuilt once per frame, so across a frame's
+# substeps the body is frozen at that frame's pose while only the hair moves.
+# A fast head therefore teleports ~one frame of motion (~30 mm) at each frame
+# boundary and the hair, left behind, ends up deep inside it -- the deep
+# penetration that forces the violent push-out. Interpolating the body vertices
+# from the previous frame's pose to this frame's pose across the substeps (same
+# alpha the hair root uses) lets the body advance gradually, so the hair is
+# pushed a little each substep instead of being swallowed and expelled.
+@wp.kernel
+def _lerp_points_kernel(
+    a: wp.array(dtype=wp.vec3),
+    b: wp.array(dtype=wp.vec3),
+    out: wp.array(dtype=wp.vec3),
+    alpha: float,
+):
+    i = wp.tid()
+    out[i] = a[i] * (1.0 - alpha) + b[i] * alpha
 
 
 @dataclass
@@ -801,25 +944,26 @@ def _armature_from_object(obj):
     return None
 
 
-def _head_seed_world(body_obj):
-    armature = _armature_from_object(body_obj)
-    if armature is None:
-        return None
+def _head_bone_name(armature):
     candidates = (
         "CC_Base_Head",
         "Head",
         "head",
     )
-    bone_name = None
     for name in candidates:
         if name in armature.pose.bones or name in armature.data.bones:
-            bone_name = name
-            break
-    if bone_name is None:
-        for bone in armature.data.bones:
-            if "head" in bone.name.lower():
-                bone_name = bone.name
-                break
+            return name
+    for bone in armature.data.bones:
+        if "head" in bone.name.lower():
+            return bone.name
+    return None
+
+
+def _head_seed_world(body_obj):
+    armature = _armature_from_object(body_obj)
+    if armature is None:
+        return None
+    bone_name = _head_bone_name(armature)
     if bone_name is None:
         return None
     pose_bone = armature.pose.bones.get(bone_name)
@@ -827,6 +971,70 @@ def _head_seed_world(body_obj):
         return armature.matrix_world @ pose_bone.tail
     bone = armature.data.bones.get(bone_name)
     return armature.matrix_world @ bone.tail_local if bone is not None else None
+
+
+def _ear_anchor_world(armature):
+    """World position of the earlobe-line anchor, or ``None``.
+
+    The lock extends down to the ears, so it needs an anatomical height at the
+    ear. There is usually no ear bone; the jaw hinge (``CC_Base_JawRoot``) sits
+    right at the earlobe/ear-canal height and rides the head, so it is the
+    preferred anchor. The eye bones (a touch above the ear) are the fallback.
+    """
+    for name in ("CC_Base_JawRoot", "JawRoot"):
+        pb = armature.pose.bones.get(name)
+        if pb is not None:
+            return np.asarray(armature.matrix_world @ pb.head, dtype=np.float32)
+    eyes = [armature.pose.bones.get(n) for n in ("CC_Base_L_Eye", "CC_Base_R_Eye")]
+    eyes = [pb for pb in eyes if pb is not None]
+    if eyes:
+        pts = [np.asarray(armature.matrix_world @ pb.head, dtype=np.float32) for pb in eyes]
+        return np.mean(pts, axis=0).astype(np.float32)
+    return None
+
+
+def _head_frame_world(body_obj):
+    """World-space head frame for the adaptive root lock.
+
+    Returns ``(base, up, tip, ear_offset)`` where ``base`` is the head bone root,
+    ``up`` is the unit head bone axis (root->tip) in world, ``tip`` is the top of
+    the skull, and ``ear_offset`` is the head-local up-height of the earlobe line
+    (the lower bound of the lock) measured from ``base`` along ``up``. All track
+    the head pose every frame, so nothing assumes a fixed facing (the face is
+    currently -Y but need not be). The head advance velocity is sampled at ``tip``
+    rather than ``base`` so a nod or head-shake (which rotates the skull about the
+    near-stationary neck pivot) registers as motion into the hair, not just a
+    bodily translation. Returns ``None`` when no head bone exists.
+    """
+    armature = _armature_from_object(body_obj)
+    if armature is None:
+        return None
+    bone_name = _head_bone_name(armature)
+    if bone_name is None:
+        return None
+    pose_bone = armature.pose.bones.get(bone_name)
+    if pose_bone is not None:
+        base = armature.matrix_world @ pose_bone.head
+        tip = armature.matrix_world @ pose_bone.tail
+    else:
+        bone = armature.data.bones.get(bone_name)
+        if bone is None:
+            return None
+        base = armature.matrix_world @ bone.head_local
+        tip = armature.matrix_world @ bone.tail_local
+    base = np.asarray(base, dtype=np.float32)
+    tip = np.asarray(tip, dtype=np.float32)
+    up = tip - base
+    norm = float(np.linalg.norm(up))
+    if norm < 1.0e-9:
+        up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    else:
+        up = up / norm
+    ear = _ear_anchor_world(armature)
+    # Earlobe height along head-up from the head-bone root. Fall back to the head
+    # root (0) if no anchor exists -- i.e. lock the crown only, never lower.
+    ear_offset = float(np.dot(ear - base, up)) if ear is not None else 0.0
+    return base, up, tip, ear_offset
 
 
 @dataclass
@@ -1294,6 +1502,69 @@ def _inverse_mass(n_strands: int, pps: int, root_locked_points: int) -> np.ndarr
         base = strand * pps
         inv[base:base + locked] = 0.0
     return inv
+
+
+def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
+    if edge1 == edge0:
+        return (x >= edge1).astype(np.float32)
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _lock_prefix_counts(sim_world: np.ndarray, pps: int,
+                        head_base: np.ndarray, head_up: np.ndarray,
+                        ear_offset: float) -> np.ndarray:
+    """Per-strand count of contiguous root-side joints above the earlobe line.
+
+    A joint is above the earlobe line when its height along ``head_up`` (measured
+    from the head-bone root ``head_base``) is at least ``ear_offset``. The lock
+    must stay a contiguous root prefix (the solver assumes kinematic vertices form
+    a prefix), so this is the run of ``True`` starting at the root, not the total
+    count above.
+    """
+    pts = sim_world.reshape(-1, pps, 3).astype(np.float32)
+    height = (pts - head_base[None, None, :]) @ head_up  # (n, pps)
+    above = height >= float(ear_offset)
+    has_free = np.any(~above, axis=1)
+    first_free = np.argmax(~above, axis=1)  # 0 when the root itself is below
+    return np.where(has_free, first_free, pps).astype(np.int64)
+
+
+def _adaptive_lock_counts(sim_world: np.ndarray, pps: int,
+                          head_base: np.ndarray, head_up: np.ndarray,
+                          ear_offset: float, v_head: np.ndarray,
+                          baseline_locked: int, inner_deg: float, outer_deg: float,
+                          min_speed: float) -> np.ndarray:
+    """Per-strand kinematic lock count for this frame (see ADAPTIVE_LOCK_* docs).
+
+    Direction only: once the head is moving (``|v_head| >= min_speed``) the lock
+    extent no longer depends on how fast -- strands inside the ``v_head`` cone get
+    the full earlobe lock, a soft angular skirt aside.
+    """
+    n = sim_world.shape[0] // pps
+    baseline = max(1, min(int(baseline_locked), pps))
+    speed = float(np.linalg.norm(v_head))
+    if n == 0:
+        return np.full(0, baseline, dtype=np.int64)
+    if speed < float(min_speed):
+        return np.full(n, baseline, dtype=np.int64)
+
+    pts = sim_world.reshape(n, pps, 3).astype(np.float32)
+    root_dir = pts[:, 0, :] - head_base[None, :]
+    root_norm = np.linalg.norm(root_dir, axis=1, keepdims=True)
+    root_dir = np.divide(root_dir, np.where(root_norm < 1.0e-9, 1.0, root_norm))
+    v_hat = v_head / speed
+    cos_ang = root_dir @ v_hat  # (n,)
+
+    cos_inner = math.cos(math.radians(max(0.0, min(inner_deg, outer_deg))))
+    cos_outer = math.cos(math.radians(max(inner_deg, outer_deg)))
+    # 1 inside the inner cone, smoothly to 0 by the outer cone (cos is decreasing).
+    weight = _smoothstep(cos_outer, cos_inner, cos_ang)  # (n,) in [0, 1]
+
+    prefix = _lock_prefix_counts(sim_world, pps, head_base, head_up, ear_offset)
+    target = np.maximum(baseline, prefix)  # never below the uniform baseline
+    counts = np.rint(baseline + (target - baseline) * weight).astype(np.int64)
+    return np.clip(counts, 1, pps)
 
 
 def _guide_point_indices(guide_indices: np.ndarray, pps: int) -> np.ndarray:
@@ -1953,6 +2224,7 @@ class WarpJointSimulator:
         self.n_segments = self.n_strands * (self.pps - 1)
         self.inv_mass_np = _inverse_mass(self.n_strands, self.pps, root_locked_points)
         self.seg_rest_np, _bend_rest_np = _rest_lengths(init_positions, self.pps)
+        self.particle_mass = max(float(particle_mass), 1.0e-8)
 
         positions = np.ascontiguousarray(init_positions, dtype=np.float32)
         inv_mass = self.inv_mass_np / max(float(particle_mass), 1.0e-8)
@@ -1974,14 +2246,24 @@ class WarpJointSimulator:
         self.inertial = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
         self.pos_tc = wp.zeros(self.n_total, dtype=float, device=self.device)
         self.pos_td = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+        self.vel_tmp = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+        self.pre_collide = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+        # Anti-kink collision distribution scratch (see _corr_*_kernel).
+        self.collide_before = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+        self.corr_a = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+        self.corr_b = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
 
         self.contact_mask = wp.zeros(self.n_total, dtype=wp.int32, device=self.device)
         self.frame_contact_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
+        self.substep_contact_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
         self.post_active_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
         self.post_contact_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
         self.keep_segment_rest = wp.array(self.seg_rest_np, dtype=float, device=self.device)
         self.hit_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         self._last_meshes: ColliderMeshSet | None = None
+        # Previous frame's body collider vertices, carried forward so the body can
+        # be interpolated across substeps (see _lerp_points_kernel).
+        self._body_prev = None
 
     def set_targets(self, start: np.ndarray, end: np.ndarray) -> None:
         self.target_start.assign(np.ascontiguousarray(start, dtype=np.float32))
@@ -1993,6 +2275,27 @@ class WarpJointSimulator:
             raise ValueError(f"position shape mismatch: {positions.shape} != {(self.n_total, 3)}")
         self.pos.assign(positions)
         self.predicted.assign(positions)
+
+    def set_lock_counts(self, counts: np.ndarray) -> None:
+        """Rebuild the kinematic mask from a per-strand root-lock count.
+
+        Locks the first ``counts[s]`` vertices of strand ``s`` (a contiguous root
+        prefix, as the solver requires) and re-uploads ``inv_mass``. Called each
+        frame by the adaptive root lock; a no-op-equivalent uniform count matches
+        the static behaviour.
+        """
+        counts = np.ascontiguousarray(counts, dtype=np.int64).reshape(-1)
+        if counts.shape[0] != self.n_strands:
+            raise ValueError(f"lock count shape mismatch: {counts.shape[0]} != {self.n_strands}")
+        counts = np.clip(counts, 1, self.pps)
+        inv = np.ones(self.n_total, dtype=np.float32)
+        inv_2d = inv.reshape(self.n_strands, self.pps)
+        local = np.arange(self.pps, dtype=np.int64)[None, :]
+        inv_2d[local < counts[:, None]] = 0.0
+        self.inv_mass_np = inv
+        inv_mass = inv / self.particle_mass
+        inv_mass[inv <= 0.0] = 0.0
+        self.inv_mass.assign(inv_mass)
 
     def set_keep_rest_lengths(self, rest_lengths: np.ndarray) -> None:
         rest = np.ascontiguousarray(rest_lengths.reshape(-1), dtype=np.float32)
@@ -2042,6 +2345,17 @@ class WarpJointSimulator:
             n_triangles=body_triangles + clothes_triangles,
         )
 
+    def snapshot_body_points(self, collider_objects):
+        """Body collider vertices at the current frame as a Warp vec3 array.
+
+        Used to prime ``_body_prev`` so the body can be interpolated across
+        substeps from the very first simulated frame.
+        """
+        if not collider_objects:
+            return None
+        vertices, _indices = _evaluated_mesh_arrays([collider_objects[0]])
+        return wp.array(vertices, dtype=wp.vec3, device=self.device)
+
     def estimated_free_move_mm(self, dt_frame: float,
                                gravity: tuple[float, float, float]) -> float:
         free = self.inv_mass_np > 0.0
@@ -2053,7 +2367,8 @@ class WarpJointSimulator:
         return float(np.max(np.linalg.norm(motion, axis=1)) * 1000.0) if len(motion) else 0.0
 
     def _solve_constraints(self, dt: float, iterations: int,
-                           k_ss: float, k_bt: float) -> None:
+                           k_ss: float, k_bt: float,
+                           buckle_resistance: float = 0.0) -> None:
         """Stable Cosserat elastic-rod solve on the current ``predicted`` state.
 
         Alternates an exact per-strand tridiagonal position solve (orientations
@@ -2099,15 +2414,38 @@ class WarpJointSimulator:
                         float(ORIENT_GN_DAMPING),
                         float(ORIENT_RELAXATION),
                         float(ORIENT_MAX_OMEGA),
+                        float(BEND_ROOT_BOOST),
                     ],
                     device=self.device,
                 )
+            if buckle_resistance > 0.0 and self.pps >= 3:
+                for color in (0, 1, 2):
+                    wp.launch(
+                        _cosserat.cosserat_buckle_kernel,
+                        dim=self.n_strands * (self.pps - 2),
+                        inputs=[
+                            self.predicted,
+                            self.inv_mass,
+                            self.pps,
+                            color,
+                            float(BUCKLE_THRESHOLD),
+                            float(buckle_resistance),
+                        ],
+                        device=self.device,
+                    )
 
     def _collide(self, meshes: ColliderMeshSet, margin: float, search_distance: float,
                  max_correction: float, collision_response: float,
-                 allow_sweep: bool, segment_passes: int) -> None:
+                 allow_sweep: bool, segment_passes: int,
+                 collision_smoothing: float = 0.0) -> None:
         max_correction = max(float(max_correction), 1.0e-6)
         collision_response = min(max(float(collision_response), 0.0), 1.0)
+        smooth_passes = int(round(min(max(float(collision_smoothing), 0.0), 1.0)
+                                  * float(COLLISION_SMOOTH_MAX_PASSES)))
+        if smooth_passes > 0:
+            # Snapshot pre-collision positions so the push-out can be captured as
+            # a correction field and diffused along each strand (anti-kink).
+            wp.copy(self.collide_before, self.predicted)
         if meshes.body is not None:
             wp.launch(
                 _body_point_collision_kernel,
@@ -2194,6 +2532,22 @@ class WarpJointSimulator:
                         ],
                         device=self.device,
                     )
+        if smooth_passes > 0:
+            # Capture the net push-out as a per-point correction field, diffuse it
+            # along each strand so no single joint is kinked, then re-apply. Locked
+            # points hold zero, anchoring the diffusion at the root.
+            wp.launch(_corr_capture_kernel, dim=self.n_total,
+                      inputs=[self.collide_before, self.predicted, self.corr_a, self.inv_mass],
+                      device=self.device)
+            for _ in range(smooth_passes):
+                wp.launch(_corr_smooth_kernel, dim=self.n_total,
+                          inputs=[self.corr_a, self.corr_b, self.inv_mass, self.pps,
+                                  float(COLLISION_SMOOTH_WEIGHT)],
+                          device=self.device)
+                self.corr_a, self.corr_b = self.corr_b, self.corr_a
+            wp.launch(_corr_apply_kernel, dim=self.n_total,
+                      inputs=[self.collide_before, self.corr_a, self.predicted, self.inv_mass],
+                      device=self.device)
 
     def post_keep_length_collision(
         self,
@@ -2293,9 +2647,23 @@ class WarpJointSimulator:
         collision_velocity_damping: float,
         collision_passes: int,
         post_collision_iterations: int,
+        internal_damping: float,
+        buckle_resistance: float,
+        collision_smoothing: float = 0.0,
+        interpolate_collider: bool = True,
     ) -> tuple[np.ndarray, int, int, np.ndarray]:
         meshes = self.make_meshes(collider_objects)
         self._last_meshes = meshes
+        # Snapshot this frame's body pose (the substep target) and decide whether
+        # the body can be interpolated from the previous frame across substeps.
+        body_curr = None
+        body_interp = False
+        if interpolate_collider and meshes.body is not None:
+            body_curr = wp.clone(meshes.body.points)
+            body_interp = (
+                self._body_prev is not None
+                and len(self._body_prev) == len(body_curr)
+            )
         self.set_targets(target_start, target_end)
         self.hit_count.assign(np.zeros(1, dtype=np.int32))
         wp.launch(
@@ -2308,6 +2676,17 @@ class WarpJointSimulator:
         dt = float(dt_frame) / float(substeps)
         for step in range(substeps):
             alpha = float(step + 1) / float(substeps)
+            # Advance the body collider to the same fraction of the frame as the
+            # hair root, so the head moves smoothly into the hair instead of
+            # teleporting a whole frame at the boundary and swallowing it.
+            if body_interp:
+                wp.launch(
+                    _lerp_points_kernel,
+                    dim=len(body_curr),
+                    inputs=[self._body_prev, body_curr, meshes.body.points, alpha],
+                    device=self.device,
+                )
+                meshes.body.refit()
             wp.launch(
                 _predict_kernel,
                 dim=self.n_total,
@@ -2327,7 +2706,12 @@ class WarpJointSimulator:
                 ],
                 device=self.device,
             )
-            self._solve_constraints(dt, iterations, stretch_stiffness, bend_stiffness)
+            self._solve_constraints(dt, iterations, stretch_stiffness, bend_stiffness, buckle_resistance)
+            # Snapshot the real-force (pre-collision) solved position. Velocity is
+            # derived from this below, so the collision push-out -- a position
+            # correction, not a force -- never contributes to velocity. Otherwise
+            # a ~5 mm push injects ~1 m/s that the stiff rod then flings.
+            wp.copy(self.pre_collide, self.predicted)
             wp.launch(
                 _clear_contact_mask_kernel,
                 dim=self.n_total,
@@ -2336,36 +2720,59 @@ class WarpJointSimulator:
             )
             self._collide(meshes, collision_margin, collision_search,
                           collision_max_correction, collision_response,
-                          True, collision_passes)
+                          True, collision_passes, collision_smoothing)
             for _ in range(max(0, int(post_collision_iterations))):
-                self._solve_constraints(dt, 1, stretch_stiffness, bend_stiffness)
+                self._solve_constraints(dt, 1, stretch_stiffness, bend_stiffness, buckle_resistance)
                 self._collide(meshes, collision_margin, collision_search,
                               collision_max_correction, collision_response,
-                              False, collision_passes)
+                              False, collision_passes, collision_smoothing)
             # Collision pushed points last, which breaks segment length; finish
             # with a rod solve so the committed state is length-correct. The weak
             # inertia term anchors it to the just-collided (pushed-out) shape, so
             # this restores length with minimal re-penetration. This is what
             # makes the FK "keep length" reconnection unnecessary.
             self._solve_constraints(dt, max(2, int(post_collision_iterations)),
-                                    stretch_stiffness, bend_stiffness)
+                                    stretch_stiffness, bend_stiffness, buckle_resistance)
+            # Flag every strand that was pushed by collision this substep, so the
+            # velocity update can damp the whole strand (the push propagates along
+            # the rod) instead of only the contact points.
+            wp.launch(_clear_contact_mask_kernel, dim=self.n_strands,
+                      inputs=[self.substep_contact_strands], device=self.device)
+            wp.launch(_mark_strand_contacts, dim=self.n_total,
+                      inputs=[self.contact_mask, self.substep_contact_strands, self.pps],
+                      device=self.device)
             wp.launch(
                 _derive_velocity_kernel,
                 dim=self.n_total,
                 inputs=[
                     self.pos,
+                    self.pre_collide,
                     self.predicted,
                     self.vel,
                     self.inv_mass,
-                    self.contact_mask,
+                    self.substep_contact_strands,
+                    self.pps,
                     dt,
                     float(damping),
                     float(max_velocity),
                     min(max(float(collision_velocity_damping), 0.0), 1.0),
+                    int(1) if body_interp else int(0),
                 ],
                 device=self.device,
             )
+            if internal_damping > 0.0:
+                mu = min(max(float(internal_damping), 0.0), 0.5)
+                wp.copy(self.vel_tmp, self.vel)
+                wp.launch(
+                    _cosserat._internal_damp_kernel,
+                    dim=self.n_total,
+                    inputs=[self.vel_tmp, self.vel, self.inv_mass, self.pps, mu],
+                    device=self.device,
+                )
             wp.launch(_commit_kernel, dim=self.n_total, inputs=[self.pos, self.predicted], device=self.device)
+        # Carry this frame's body pose forward as the next frame's substep start.
+        if body_curr is not None:
+            self._body_prev = body_curr
         wp.synchronize()
         hits = int(self.hit_count.numpy()[0])
         contact_strands = self.frame_contact_strands.numpy().astype(np.int32, copy=True)
@@ -2397,7 +2804,7 @@ def check_warp_ready(curves_obj, collider_objects, root_locked_points: int,
     )
 
 
-def simulate(
+def simulate_iter(
     curves_obj,
     collider_objects,
     start_frame: int,
@@ -2421,6 +2828,15 @@ def simulate(
     bake_mode: str,
     guide_decimation: int = 1,
     keep_length: bool = True,
+    internal_damping: float = 0.05,
+    buckle_resistance: float = 0.0,   # superseded by collision_smoothing (anti-kink); kept dormant
+    collision_smoothing: float = 0.5,
+    interpolate_collider: bool = False,   # experimental; needs a proper collider-velocity contact model (see DEV_NOTES)
+    adaptive_root_lock: bool = True,
+    adaptive_lock_inner_deg: float = ADAPTIVE_LOCK_INNER_DEG,
+    adaptive_lock_outer_deg: float = ADAPTIVE_LOCK_OUTER_DEG,
+    adaptive_lock_min_speed: float = ADAPTIVE_LOCK_MIN_SPEED,
+    adaptive_lock_smooth: float = ADAPTIVE_LOCK_VHEAD_SMOOTH,
 ) -> WarpSimStats:
     if curves_obj is None or curves_obj.type != "CURVES":
         raise ValueError("expected one Curves object")
@@ -2455,6 +2871,7 @@ def simulate(
     last_triangles = 0
     max_keep_length_error_mm = 0.0
     success = False
+    cancelled = False
     cache_path = ""
     cache_restore_local_values = None
     target_worlds = {}
@@ -2513,13 +2930,48 @@ def simulate(
         baked = {start_frame: current_world.copy()}
         scene.frame_set(start_frame)
         _force_viewport_refresh()
+        # Prime the body-collider interpolation with the start-frame pose so the
+        # body advances smoothly across substeps from the first simulated frame.
+        simulator._body_prev = (
+            simulator.snapshot_body_points(collider_objects) if interpolate_collider else None
+        )
 
         dt_frame = float(scene.render.fps_base) / max(float(scene.render.fps), 1.0)
+        # Adaptive root lock: track the head-bone frame across frames so the head
+        # advance velocity ``v_head`` can be measured (start-frame pose primes it).
+        adaptive_head_frame = _head_frame_world(body_hard_guard_obj) if adaptive_root_lock else None
+        prev_head_tip = adaptive_head_frame[2] if adaptive_head_frame is not None else None
+        v_head_ema = np.zeros(3, dtype=np.float32)
+        adaptive_smooth = min(max(float(adaptive_lock_smooth), 0.0), 0.99)
+        max_adaptive_locked = 0
+        adaptive_lock_strand_frames = 0
         for frame in frames[1:]:
             scene.frame_set(frame)
             body_hard_guard_seed = _head_seed_world(body_hard_guard_obj)
             eval_world = target_worlds[frame]
             eval_sim_world = np.ascontiguousarray(eval_world[guide_point_indices], dtype=np.float32)
+            # Adaptive per-strand root lock: measure how fast (and which way) the
+            # head is advancing, then lock the crown-side joints of the strands it
+            # is driving into so they ride the skull instead of being flung.
+            if adaptive_root_lock:
+                head_frame = _head_frame_world(body_hard_guard_obj)
+                if head_frame is not None:
+                    head_base, head_up, head_tip, ear_offset = head_frame
+                    if prev_head_tip is not None:
+                        raw_v = (head_tip - prev_head_tip) / max(dt_frame, 1.0e-6)
+                    else:
+                        raw_v = np.zeros(3, dtype=np.float32)
+                    v_head_ema = adaptive_smooth * v_head_ema + (1.0 - adaptive_smooth) * raw_v
+                    prev_head_tip = head_tip
+                    lock_counts = _adaptive_lock_counts(
+                        eval_sim_world, pps, head_base, head_up, ear_offset,
+                        v_head_ema, locked,
+                        adaptive_lock_inner_deg, adaptive_lock_outer_deg,
+                        adaptive_lock_min_speed,
+                    )
+                    simulator.set_lock_counts(lock_counts)
+                    max_adaptive_locked = max(max_adaptive_locked, int(lock_counts.max()))
+                    adaptive_lock_strand_frames += int(np.count_nonzero(lock_counts > locked))
             target_move_mm = _target_motion_mm(prev_targets, eval_sim_world, simulator.inv_mass_np)
             inertial_move_mm = simulator.estimated_free_move_mm(dt_frame, gravity)
             move_mm = max(target_move_mm, inertial_move_mm)
@@ -2558,6 +3010,10 @@ def simulate(
                 float(collision_velocity_damping),
                 int(collision_passes),
                 int(post_collision_iterations),
+                float(internal_damping),
+                float(buckle_resistance),
+                float(collision_smoothing),
+                bool(interpolate_collider),
             )
             post_hits = 0
             post_contacts = np.zeros_like(contact_strands)
@@ -2685,6 +3141,17 @@ def simulate(
                 body_fk_root_locked_points=locked,
             )
             max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
+            # This frame's result is now written to the Curves; draw it so the
+            # user can watch the bake and stop early if it looks wrong, then hand
+            # control back to Blender (a modal driver steps one frame per tick).
+            _force_viewport_refresh()
+            yield {
+                "frame": int(frame),
+                "start_frame": int(start_frame),
+                "end_frame": int(end_frame),
+                "completed": int(frame_steps),
+                "total": int(len(frames) - 1),
+            }
 
         if bake_mode == "KEYFRAMES":
             _bake_position_keyframes(
@@ -2730,9 +3197,34 @@ def simulate(
             )
             max_keep_length_error_mm = max(max_keep_length_error_mm, show_error)
         success = True
+    except GeneratorExit:
+        # The driver stopped the bake early. Keep the frames computed so far as a
+        # runtime cache (so they stay viewable and bakeable) and leave the view on
+        # the last computed frame instead of reverting.
+        cancelled = True
+        computed_frames = sorted(baked.keys())
+        if len(computed_frames) >= 2:
+            try:
+                cache = _register_sim_cache(
+                    curves_obj,
+                    computed_frames,
+                    baked,
+                    offsets,
+                    restore_local_values=cache_restore_local_values,
+                    pps=pps,
+                    keep_rest_lengths=keep_rest_lengths,
+                    keep_fallback_dirs=keep_fallback_dirs,
+                    body_hard_guard_obj=body_hard_guard_obj,
+                    body_hard_guard_margin=float(collision_margin_m),
+                    body_fk_root_locked_points=locked,
+                )
+                cache_path = cache.path
+            except Exception:
+                pass
+        raise
     finally:
         _CACHE_MUTED = previous_cache_muted
-        if not success:
+        if not success and not cancelled:
             scene.frame_set(original_frame)
             if original_frame in target_worlds and original_frame in offsets:
                 _write_world_points(
@@ -2751,6 +3243,9 @@ def simulate(
         guide_decimation=guide_decimation,
         points_per_strand=pps,
         root_locked_points=locked,
+        adaptive_root_lock=bool(adaptive_root_lock),
+        adaptive_lock_max_points=int(max_adaptive_locked),
+        adaptive_lock_strand_frames=int(adaptive_lock_strand_frames),
         frame_steps=frame_steps,
         total_substeps=total_substeps,
         max_substeps=max_substeps_seen,
@@ -2779,3 +3274,17 @@ def simulate(
         device_arch=simulator.device_arch,
         elapsed_sec=time.perf_counter() - t0,
     )
+
+
+def simulate(*args, **kwargs) -> WarpSimStats:
+    """Blocking wrapper: run ``simulate_iter`` to completion and return its stats.
+
+    Kept for non-interactive callers; the UI drives ``simulate_iter`` a frame at a
+    time through a modal operator so the bake can be watched and stopped.
+    """
+    gen = simulate_iter(*args, **kwargs)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value

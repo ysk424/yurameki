@@ -17,7 +17,7 @@ from bpy.props import (
 )
 from bpy.types import Operator, WindowManager
 
-from . import assistant, ui
+from . import ui
 
 
 def _load_defaults():
@@ -84,122 +84,78 @@ def _source_clothes_collider(context):
     return obj if obj is not None and obj.type == "MESH" else None
 
 
-def _ensure_body_proxy(context):
-    from . import collider_proxy
-
+def _compute_colliders(context):
     body = _source_body_collider(context)
     if body is None:
         raise ValueError("Select a Body mesh first")
-    proxy = collider_proxy.get_valid_proxy(
-        body,
-        getattr(context.window_manager, "yurameki_collider_proxy_obj", ""),
-    )
-    if proxy is not None:
-        return proxy, None
-    stats = collider_proxy.build_filled_proxy(
-        body,
-        getattr(context.window_manager, "yurameki_collider_proxy_obj", ""),
-    )
-    context.window_manager.yurameki_collider_proxy_obj = stats["proxy_name"]
-    proxy = bpy.data.objects.get(stats["proxy_name"])
-    return proxy if proxy is not None else body, stats
-
-
-def _compute_colliders(context):
-    body_or_proxy, proxy_stats = _ensure_body_proxy(context)
-    colliders = [body_or_proxy]
+    colliders = [body]
     clothes = _source_clothes_collider(context)
     if clothes is not None:
         colliders.append(clothes)
-    return colliders, proxy_stats
+    return colliders
 
 
-def _check_hair(context):
+def _make_sim_generator(context):
+    """Build the frame-by-frame simulation generator, or return (None, message).
+
+    The generator (``_warp_sim.simulate_iter``) yields once per computed frame so
+    a modal operator can step it, draw each frame, and stop early.
+    """
     obj = _find_curves_obj(context)
     if obj is None:
-        return False, "Pick one Hair Curves object"
-    try:
-        from . import _warp_sim
-
-        pps, strands = _points_per_strand(obj)
-        colliders, proxy_stats = _compute_colliders(context)
-        stats = _warp_sim.check_warp_ready(
-            obj,
-            colliders,
-            root_locked_points=int(context.window_manager.yurameki_root_locked_points),
-            particle_mass=float(context.window_manager.yurameki_particle_mass_g) * 1.0e-3,
-        )
-    except ImportError as exc:
-        return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
-    except Exception as exc:
-        return False, f"Check failed: {exc}"
-    context.window_manager.yurameki_points_per_strand = pps
-    proxy_text = "reused"
-    if proxy_stats is not None:
-        proxy_text = (
-            f"created {proxy_stats['proxy_name']} "
-            f"filled={proxy_stats['faces_added']} capv={proxy_stats.get('cap_vertices_added', 0)} "
-            f"boundary={proxy_stats['boundary_edges_after']}"
-        )
-    clothes = _source_clothes_collider(context)
-    return (
-        True,
-        f"Check PASS: warp={stats.warp_version} {stats.device} "
-        f"{stats.device_name} sm_{stats.device_arch}, "
-        f"strands={strands}, points={stats.n_points}, pps={stats.points_per_strand}, "
-        f"locked={stats.root_locked_points}, tris={stats.n_triangles}, "
-        f"body_proxy={proxy_text}, clothes={clothes.name if clothes else 'none'}",
-    )
-
-
-def _simulate(context):
-    obj = _find_curves_obj(context)
-    if obj is None:
-        return False, "Pick one Hair Curves object"
+        return None, "Pick one Hair Curves object"
     wm = context.window_manager
     try:
         from . import _warp_sim
 
         _points_per_strand(obj)
-        colliders, _proxy_stats = _compute_colliders(context)
-        stats = _warp_sim.simulate(
-            obj,
-            colliders,
-            start_frame=int(wm.yurameki_sim_start_frame),
-            end_frame=int(wm.yurameki_sim_end_frame),
-            root_locked_points=int(wm.yurameki_root_locked_points),
-            gravity=tuple(float(v) for v in wm.yurameki_gravity),
-            damping=float(wm.yurameki_damping),
-            max_velocity_mps=float(wm.yurameki_max_velocity_mps),
-            particle_mass=float(wm.yurameki_particle_mass_g) * 1.0e-3,
-            iterations=int(wm.yurameki_iterations),
-            bend_stiffness=_value_from_log10(wm.yurameki_bend_stiffness_log10),
-            collision_margin_m=float(wm.yurameki_collision_margin_mm) * 1.0e-3,
-            collision_search_m=float(wm.yurameki_collision_search_mm) * 1.0e-3,
-            collision_max_correction_m=float(wm.yurameki_collision_max_correction_mm) * 1.0e-3,
-            collision_response=float(wm.yurameki_collision_response),
-            collision_velocity_damping=float(wm.yurameki_collision_velocity_damping),
-            collision_passes=int(wm.yurameki_collision_passes),
-            post_collision_iterations=int(wm.yurameki_post_collision_iterations),
-            max_move_per_substep_m=float(wm.yurameki_auto_substep_mm) * 1.0e-3,
-            max_substeps=int(wm.yurameki_max_substeps),
-            bake_mode=wm.yurameki_sim_bake_mode,
-            guide_decimation=int(wm.yurameki_guide_decimation),
-            keep_length=bool(wm.yurameki_keep_length),
-        )
+        colliders = _compute_colliders(context)
     except ImportError as exc:
-        return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
+        return None, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
     except Exception as exc:
-        return False, f"Simulation failed: {exc!r}"
+        return None, f"Simulation setup failed: {exc!r}"
+    gen = _warp_sim.simulate_iter(
+        obj,
+        colliders,
+        start_frame=int(wm.yurameki_sim_start_frame),
+        end_frame=int(wm.yurameki_sim_end_frame),
+        root_locked_points=int(wm.yurameki_root_locked_points),
+        adaptive_root_lock=bool(wm.yurameki_adaptive_root_lock),
+        gravity=tuple(float(v) for v in wm.yurameki_gravity),
+        damping=float(wm.yurameki_damping),
+        max_velocity_mps=float(wm.yurameki_max_velocity_mps),
+        particle_mass=float(wm.yurameki_particle_mass_g) * 1.0e-3,
+        iterations=int(wm.yurameki_iterations),
+        bend_stiffness=_value_from_log10(wm.yurameki_bend_stiffness_log10),
+        collision_margin_m=float(wm.yurameki_collision_margin_mm) * 1.0e-3,
+        collision_search_m=float(wm.yurameki_collision_search_mm) * 1.0e-3,
+        collision_max_correction_m=float(wm.yurameki_collision_max_correction_mm) * 1.0e-3,
+        collision_response=float(wm.yurameki_collision_response),
+        collision_velocity_damping=float(wm.yurameki_collision_velocity_damping),
+        collision_passes=int(wm.yurameki_collision_passes),
+        post_collision_iterations=int(wm.yurameki_post_collision_iterations),
+        max_move_per_substep_m=float(wm.yurameki_auto_substep_mm) * 1.0e-3,
+        max_substeps=int(wm.yurameki_max_substeps),
+        bake_mode=wm.yurameki_sim_bake_mode,
+        guide_decimation=int(wm.yurameki_guide_decimation),
+        keep_length=bool(wm.yurameki_keep_length),
+        internal_damping=float(wm.yurameki_internal_damping),
+        collision_smoothing=float(wm.yurameki_collision_smoothing),
+    )
+    return gen, None
+
+
+def _format_sim_stats(stats):
     cache_text = f", cache={stats.cache_path}" if stats.cache_path else ""
     return (
-        True,
         f"Simulate: frames={stats.start_frame}-{stats.end_frame}, "
         f"steps={stats.frame_steps}, substeps={stats.total_substeps} "
         f"(max {stats.max_substeps}), "
         f"strands={stats.n_strands}, sim={stats.simulated_strands}, "
         f"decim={stats.guide_decimation}, pps={stats.points_per_strand}, "
         f"locked={stats.root_locked_points}, "
+        f"adaptLock={'on' if stats.adaptive_root_lock else 'off'}"
+        f"(max{stats.adaptive_lock_max_points},sf{stats.adaptive_lock_strand_frames}), "
         f"keep_len={'on' if stats.keep_length else 'off'} "
         f"(F{stats.keep_length_source_frame}, err={stats.max_keep_length_error_mm:.6f}mm), "
         f"auto_move={stats.max_auto_move_mm:.3f}mm, "
@@ -214,7 +170,7 @@ def _simulate(context):
         f"vz={stats.body_fk_velocity_zeroed}, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
         f"{stats.device} sm_{stats.device_arch}, "
-        f"bake={stats.bake_mode.lower()}{cache_text}, time={stats.elapsed_sec:.2f}s",
+        f"bake={stats.bake_mode.lower()}{cache_text}, time={stats.elapsed_sec:.2f}s"
     )
 
 
@@ -236,18 +192,6 @@ def _bake_cache(context):
         f"points={stats['n_points']}, fcurves={stats['fcurves']}, "
         f"keys={stats['keys']}",
     )
-
-
-class YURAMEKI_OT_check_hair(Operator):
-    bl_idname = "yurameki.check_hair"
-    bl_label = "Check"
-    bl_description = "Validate inputs, build/reuse the Body proxy, and initialize NVIDIA Warp CUDA"
-
-    def execute(self, context):
-        ok, message = _check_hair(context)
-        context.window_manager.yurameki_hair_check_status = message
-        self.report({"INFO"} if ok else {"ERROR"}, message)
-        return {"FINISHED"} if ok else {"CANCELLED"}
 
 
 class YURAMEKI_OT_pick_curves(Operator):
@@ -275,10 +219,6 @@ class YURAMEKI_OT_pick_collider(Operator):
         if obj is None or obj.type != "MESH":
             self.report({"ERROR"}, "Active object must be a mesh")
             return {"CANCELLED"}
-        from . import collider_proxy
-
-        collider_proxy.clear_proxy(getattr(context.window_manager, "yurameki_collider_proxy_obj", ""))
-        context.window_manager.yurameki_collider_proxy_obj = ""
         context.window_manager.yurameki_collider_obj = obj.name
         self.report({"INFO"}, f"Body: {obj.name}")
         return {"FINISHED"}
@@ -302,12 +242,109 @@ class YURAMEKI_OT_pick_clothes(Operator):
 class YURAMEKI_OT_simulate(Operator):
     bl_idname = "yurameki.simulate"
     bl_label = "Simulate"
-    bl_description = "Run the NVIDIA Warp joint-chain simulation"
+    bl_description = (
+        "Run the NVIDIA Warp simulation. Each frame is drawn as it is computed so "
+        "you can watch it; press Stop or Esc to end early and keep the frames so far"
+    )
+
+    _timer = None
+    _gen = None
+    _stats = None
+    _error = None
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        if getattr(wm, "yurameki_sim_running", False):
+            self.report({"WARNING"}, "A simulation is already running")
+            return {"CANCELLED"}
+        gen, err = _make_sim_generator(context)
+        if gen is None:
+            self.report({"ERROR"}, err)
+            return {"CANCELLED"}
+        self._gen = gen
+        self._stats = None
+        self._error = None
+        wm.yurameki_sim_cancel = False
+        wm.yurameki_sim_running = True
+        wm.yurameki_sim_status = "Starting..."
+        self._timer = wm.event_timer_add(0.01, window=context.window)
+        wm.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
 
     def execute(self, context):
-        ok, message = _simulate(context)
-        self.report({"INFO"} if ok else {"ERROR"}, message)
-        return {"FINISHED"} if ok else {"CANCELLED"}
+        # Non-interactive fallback (headless/scripts): run to completion.
+        gen, err = _make_sim_generator(context)
+        if gen is None:
+            self.report({"ERROR"}, err)
+            return {"CANCELLED"}
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            self.report({"INFO"}, _format_sim_stats(stop.value))
+            return {"FINISHED"}
+        except Exception as exc:
+            self.report({"ERROR"}, f"Simulation failed: {exc!r}")
+            return {"CANCELLED"}
+
+    def modal(self, context, event):
+        wm = context.window_manager
+        if event.type == "ESC" or getattr(wm, "yurameki_sim_cancel", False):
+            return self._end(context, cancelled=True)
+        if event.type == "TIMER":
+            try:
+                progress = next(self._gen)
+            except StopIteration as stop:
+                self._stats = stop.value
+                return self._end(context, cancelled=False)
+            except Exception as exc:
+                self._error = f"{exc!r}"
+                return self._end(context, cancelled=True)
+            wm.yurameki_sim_status = (
+                f"Frame {progress['frame']}/{progress['end_frame']} "
+                f"({progress['completed']}/{progress['total']}) - Stop/Esc to cancel"
+            )
+            if context.area is not None:
+                context.area.tag_redraw()
+            return {"RUNNING_MODAL"}
+        return {"PASS_THROUGH"}
+
+    def _end(self, context, cancelled):
+        wm = context.window_manager
+        if self._timer is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        if self._gen is not None:
+            try:
+                self._gen.close()  # early stop -> generator keeps its computed frames
+            except Exception:
+                pass
+            self._gen = None
+        wm.yurameki_sim_running = False
+        wm.yurameki_sim_cancel = False
+        if context.area is not None:
+            context.area.tag_redraw()
+        if cancelled:
+            if self._error:
+                wm.yurameki_sim_status = f"Error: {self._error}"
+                self.report({"ERROR"}, self._error)
+            else:
+                wm.yurameki_sim_status = "Stopped (kept computed frames)"
+                self.report({"INFO"}, "Simulation stopped; computed frames kept")
+            return {"CANCELLED"}
+        wm.yurameki_sim_status = "Done"
+        self.report({"INFO"}, _format_sim_stats(self._stats) if self._stats else "Simulate done")
+        return {"FINISHED"}
+
+
+class YURAMEKI_OT_stop_simulate(Operator):
+    bl_idname = "yurameki.stop_simulate"
+    bl_label = "Stop"
+    bl_description = "Stop the running simulation and keep the frames computed so far"
+
+    def execute(self, context):
+        context.window_manager.yurameki_sim_cancel = True
+        return {"FINISHED"}
 
 
 class YURAMEKI_OT_bake_cache(Operator):
@@ -322,28 +359,31 @@ class YURAMEKI_OT_bake_cache(Operator):
 
 
 _classes = (
-    YURAMEKI_OT_check_hair,
     YURAMEKI_OT_pick_curves,
     YURAMEKI_OT_pick_collider,
     YURAMEKI_OT_pick_clothes,
     YURAMEKI_OT_simulate,
+    YURAMEKI_OT_stop_simulate,
     YURAMEKI_OT_bake_cache,
-    *assistant.CLASSES,
 )
 
 
 _PROP_NAMES = (
     "yurameki_points_per_strand",
-    "yurameki_hair_check_status",
+    "yurameki_sim_running",
+    "yurameki_sim_cancel",
+    "yurameki_sim_status",
     "yurameki_curves_obj",
     "yurameki_collider_obj",
-    "yurameki_collider_proxy_obj",
     "yurameki_clothes_obj",
     "yurameki_sim_start_frame",
     "yurameki_sim_end_frame",
     "yurameki_root_locked_points",
+    "yurameki_adaptive_root_lock",
     "yurameki_gravity",
     "yurameki_damping",
+    "yurameki_internal_damping",
+    "yurameki_collision_smoothing",
     "yurameki_max_velocity_mps",
     "yurameki_particle_mass_g",
     "yurameki_iterations",
@@ -360,8 +400,6 @@ _PROP_NAMES = (
     "yurameki_guide_decimation",
     "yurameki_keep_length",
     "yurameki_sim_bake_mode",
-    "yurameki_assistant_input",
-    "yurameki_assistant_status",
 )
 
 
@@ -389,9 +427,19 @@ def register():
             max=256,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_hair_check_status = StringProperty(
-            name="Check",
-            default="Not checked",
+        WindowManager.yurameki_sim_running = BoolProperty(
+            name="Simulation Running",
+            default=False,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_cancel = BoolProperty(
+            name="Stop Requested",
+            default=False,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_sim_status = StringProperty(
+            name="Status",
+            default="",
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_curves_obj = StringProperty(
@@ -407,11 +455,6 @@ def register():
         WindowManager.yurameki_clothes_obj = StringProperty(
             name="Clothes",
             default=str(defaults.get("CLOTHES_OBJECT", "")),
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_collider_proxy_obj = StringProperty(
-            name="Collider Proxy",
-            default="",
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_sim_start_frame = IntProperty(
@@ -435,6 +478,19 @@ def register():
             max=128,
             options={"SKIP_SAVE"},
         )
+        WindowManager.yurameki_adaptive_root_lock = BoolProperty(
+            name="Adaptive Root Lock",
+            description=(
+                "As the head advances into a strand, lock (make kinematic) the "
+                "crown-side joints of that strand so it rides the skull instead "
+                "of being headbutted and flung. The number of locked joints ramps "
+                "in smoothly with the head's approach speed and direction, and "
+                "back out when it stops, so it costs no collision work on the "
+                "leading side. Baseline is Root Locked Points"
+            ),
+            default=bool(defaults.get("ADAPTIVE_ROOT_LOCK", True)),
+            options={"SKIP_SAVE"},
+        )
         WindowManager.yurameki_gravity = FloatVectorProperty(
             name="Gravity m/s2",
             default=tuple(defaults.get("GRAVITY", (0.0, 0.0, -9.81))),
@@ -452,6 +508,33 @@ def register():
             min=0.0,
             max=0.99,
             precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_internal_damping = FloatProperty(
+            name="Internal Damping",
+            description=(
+                "Strain-rate (viscoelastic) damping between a strand's joints. "
+                "Removes internal ringing, jitter, and frizz while preserving the "
+                "bulk motion that follows the head and gravity"
+            ),
+            default=float(defaults.get("INTERNAL_DAMPING", 0.05)),
+            min=0.0,
+            max=0.5,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_collision_smoothing = FloatProperty(
+            name="Collision Smoothing",
+            description=(
+                "Distributes each collision push-out along the strand before it is "
+                "applied (anti-kink). Stops a scalp-adjacent strand from being "
+                "folded into a sharp bend at one joint where the body pushes it. "
+                "0 disables it; higher spreads the push over more joints"
+            ),
+            default=float(defaults.get("COLLISION_SMOOTHING", 0.5)),
+            min=0.0,
+            max=1.0,
+            precision=2,
             options={"SKIP_SAVE"},
         )
         WindowManager.yurameki_max_velocity_mps = FloatProperty(
@@ -583,18 +666,6 @@ def register():
             default=str(defaults.get("SIM_BAKE_MODE", "CACHE")),
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_assistant_input = StringProperty(
-            name="Message",
-            description="Describe the motion or correction you want",
-            default="",
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_assistant_status = StringProperty(
-            name="Assistant Status",
-            default="Ready",
-            options={"SKIP_SAVE"},
-        )
-
         ui.register()
         ui_registered = True
     except Exception:
@@ -613,7 +684,6 @@ def register():
 
 
 def unregister():
-    assistant.unregister_runtime()
     mod = sys.modules.get(__name__ + "._warp_sim")
     if mod is not None:
         try:
