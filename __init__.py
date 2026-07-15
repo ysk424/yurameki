@@ -173,8 +173,7 @@ def _simulate(context):
             max_velocity_mps=float(wm.yurameki_max_velocity_mps),
             particle_mass=float(wm.yurameki_particle_mass_g) * 1.0e-3,
             iterations=int(wm.yurameki_iterations),
-            stretch_compliance=_value_from_log10(wm.yurameki_stretch_compliance_log10),
-            bend_compliance=_value_from_log10(wm.yurameki_bend_compliance_log10),
+            bend_stiffness=_value_from_log10(wm.yurameki_bend_stiffness_log10),
             collision_margin_m=float(wm.yurameki_collision_margin_mm) * 1.0e-3,
             collision_search_m=float(wm.yurameki_collision_search_mm) * 1.0e-3,
             collision_max_correction_m=float(wm.yurameki_collision_max_correction_mm) * 1.0e-3,
@@ -348,8 +347,7 @@ _PROP_NAMES = (
     "yurameki_max_velocity_mps",
     "yurameki_particle_mass_g",
     "yurameki_iterations",
-    "yurameki_stretch_compliance_log10",
-    "yurameki_bend_compliance_log10",
+    "yurameki_bend_stiffness_log10",
     "yurameki_collision_margin_mm",
     "yurameki_collision_search_mm",
     "yurameki_collision_max_correction_mm",
@@ -480,19 +478,15 @@ def register():
             max=256,
             options={"SKIP_SAVE"},
         )
-        WindowManager.yurameki_stretch_compliance_log10 = FloatProperty(
-            name="Stretch Compliance log10",
-            default=_default_log10(defaults, "STRETCH_COMPLIANCE", 1.0e-2),
-            min=-12.0,
-            max=0.0,
-            precision=2,
-            options={"SKIP_SAVE"},
-        )
-        WindowManager.yurameki_bend_compliance_log10 = FloatProperty(
-            name="Bend Compliance log10",
-            default=_default_log10(defaults, "BEND_COMPLIANCE", 1.0e-5),
-            min=-12.0,
-            max=0.0,
+        WindowManager.yurameki_bend_stiffness_log10 = FloatProperty(
+            name="Bend Stiffness log10",
+            description=(
+                "Rod bend/twist stiffness (log10). Higher is stiffer and "
+                "straighter; lower is floppier and whips more. Default -3 = 1e-3"
+            ),
+            default=_default_log10(defaults, "BEND_STIFFNESS", 1.0e-3),
+            min=-8.0,
+            max=2.0,
             precision=2,
             options={"SKIP_SAVE"},
         )

@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "yurameki2"
-version = "0.2.0"
+version = "0.2.1"
 name = "Yurameki2"
 tagline = "NVIDIA Warp elastic-rod long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"

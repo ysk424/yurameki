@@ -99,16 +99,15 @@ class YURAMEKI_PT_main(Panel):
         _operator(col, "yurameki.bake_cache", icon="ACTION")
 
         box = layout.box()
-        _label(box, "Warp")
+        _label(box, "Elastic Rod")
         col = box.column(align=True)
         _prop(col, wm, "yurameki_root_locked_points")
         _prop(col, wm, "yurameki_gravity")
         _prop(col, wm, "yurameki_damping")
         _prop(col, wm, "yurameki_max_velocity_mps")
         _prop(col, wm, "yurameki_particle_mass_g")
+        _prop(col, wm, "yurameki_bend_stiffness_log10")
         _prop(col, wm, "yurameki_iterations")
-        _prop(col, wm, "yurameki_stretch_compliance_log10")
-        _prop(col, wm, "yurameki_bend_compliance_log10")
 
         box = layout.box()
         _label(box, "Collision")

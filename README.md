@@ -1,4 +1,4 @@
-# Yurameki2 0.2.0
+# Yurameki2 0.2.1
 
 Yurameki is a Blender extension for simulating VR-character-style long straight
 hair with NVIDIA Warp. Each strand is solved as a Stable Cosserat elastic rod:
@@ -22,7 +22,7 @@ the hair, then Yurameki simulates it.
 Install the release ZIP through Blender's extension/add-on installer:
 
 ```text
-dist/yurameki-0.7.17.zip
+dist/yurameki2-0.2.1.zip
 ```
 
 ## Direction
@@ -91,59 +91,25 @@ final shape. When you do bake keyframes, Yurameki writes the Curves `position`
 F-Curves directly in bulk instead of calling Blender's per-point keyframe
 operator.
 
-`KEEP LENGTH` is the default length-safety path. Frame 1 is treated as the rest
-shape for every strand segment. After each simulated frame, Yurameki keeps the
-simulated rod directions but rebuilds the free joints after the locked prefix by
-FK from the frame-1 segment lengths. All `Root Locked Points` remain at the
-evaluated pose. The corrected result is used for live preview, cache playback,
-final preview, and keyframe baking, and the corrected guide state is fed back
-into the next frame.
+`KEEP LENGTH` is a redundant safety pass. The elastic rod already preserves
+segment length, so the reconnection is a near-identity. The flag stays default-on
+only because the CPU Body FK hard repair -- which pushes strands that would
+otherwise stay inside the Body proxy back out along their rest lengths -- reuses
+the same frame-1 rest lengths. Turning it off runs the pure rod with the Body
+seed guard still active.
 
-0.7.13 adds a Body FK hard repair pass after the seed hard guard. Active strands
-are reconstructed root-to-tip from their rest lengths; when a joint would remain
-inside the Body proxy, Yurameki searches from the XPBD direction toward the
-strand's straight continuation before falling back to a seed-ray escape point.
+## Tuning
 
-## Parameters
+Every control has a tooltip in the N-panel. The three that shape hair motion are:
 
-- `Root Locked Points`: number of joints from the root constrained to the
-  evaluated pose.
-- `Guide Decimation`: simulate one guide strand for every N strands, then
-  interpolate the full Curves cache. `1` simulates all strands; `100` simulates
-  about one percent of the strands.
-- `KEEP LENGTH`: redundant safety pass. The Cosserat rod already preserves
-  segment length (the reconnection correction is a near-identity, well under
-  `0.001 mm`), so this no longer does the length work it did under XPBD. It stays
-  default-on because the CPU Body FK hard repair reuses the same frame-1 rest
-  lengths; turning it off runs the pure rod with only the Body seed guard.
-- `Gravity m/s2`: Warp-style acceleration vector.
-- `Damping`: velocity damping after prediction.
-- `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
-- `Particle Mass g`: mass used for inverse mass of free joints. The default is
-  `0.01 g`.
-- `Iterations`: Cosserat rod solver outer iterations (each does one exact
-  tridiagonal position solve plus one orientation sweep). The default is `20`,
-  and the UI allows up to `256`.
-- `Stretch Compliance log10`: base-10 exponent controlling stretch/shear rod
-  stiffness `k_ss = 100 / compliance`. The default `-2` (`1e-2`) gives
-  `k_ss = 1e4`, effectively inextensible. Lower is stiffer.
-- `Bend Compliance log10`: base-10 exponent controlling bend/twist rod stiffness
-  `k_bt = 1e-8 / compliance`. The default `-5` (`1e-5`) gives `k_bt = 1e-3`,
-  moderate hair bending. Higher (toward `0`) is floppier; lower is stiffer.
-- `Collision Margin mm`: target separation from collider mesh.
-- `Collision Search mm`: nearest-surface search radius. The default is wide
-  enough for Body inside/outside repair, while each correction step is clamped
-  to a small distance for stability.
-- `Collision Max Correction mm`: maximum collider push-out per collision pass.
-- `Collision Response`: fraction of the collision position correction applied
-  per pass. The default `1.0` fully repairs penetration.
-- `Collision Velocity Damping`: extra damping for points touched by collision.
-  The default `1.0` stores zero velocity after collider repair, treating the
-  repair as position-error correction rather than a bouncing physical impact.
-- `Collision Passes`: segment collision passes after point collision.
-- `Post Collision Iterations`: extra constraint/collision reconciliation passes.
-- `Auto Substep mm`: maximum constrained-joint motion per substep.
-- `Max Substeps`: cap for automatic substeps.
+- `Bend Stiffness log10`: rod bend/twist stiffness. Higher is stiffer and
+  straighter; lower is floppier and whips more.
+- `Particle Mass g`: momentum. Lower is lighter and snappier and stores less
+  energy (less overshoot); higher is heavier and swings more.
+- `Damping`: how quickly motion settles.
+
+Stretch is fixed -- the rod is inextensible -- so there is no stretch knob.
+Collision, substep, and workflow controls are unchanged from the Warp path.
 
 ## Warp Requirement
 
@@ -183,57 +149,8 @@ The operator report includes the actual number of frame transitions and
 substeps, plus the selected CUDA device and SM architecture, for example
 `steps=23, substeps=207, cuda:0 sm_120`.
 
-The 0.7.8 MCP validation run used `KEEP LENGTH` on a 6000-strand / 12-point
-Curves test from frame 1 to frame 2. Evaluated viewport/cache playback lengths
-matched frame 1 with maximum absolute total-strand error below `0.001 mm`.
-
 ## Repository Notes
 
 The release package is Warp-only. The retired 0.6.x native CUDA cylinder-chain
 implementation is kept in Git history, not in the current source tree or build
 package.
-
-## 0.7.17 Release
-
-- Refresh the Blender UI when an Assistant background response finishes, so
-  conversational replies appear immediately without unrelated user input.
-
-## 0.7.16 Release
-
-- Added the conversational Yurameki Assistant for validated natural-language
-  tuning with `gpt-5.4-nano` through the OpenAI Responses API.
-- Added secure OpenAI API-key storage in Windows Credential Manager, background
-  requests, session conversation history, and previous-setting restoration.
-
-## 0.7.15 Release
-
-- Removed model-specific absolute-coordinate Body proxy ear cutting. The proxy
-  now preserves the source ears and only caps existing boundary loops. Proxies
-  created by the earlier schema are rebuilt automatically.
-- UI localization is provided by Blender. Yurameki supplies English source
-  strings and no extension-specific translation dictionary.
-- Changed defaults to `Iterations=20`, `Particle Mass=0.01 g`, and
-  `Stretch Compliance log10=-2`.
-- `Start Frame` is now an unchanged initial state; simulation and correction
-  run from the following frame through `End Frame`.
-- Body correction obtains its Head seed from each simulated frame.
-- Removed overlapping GPU writes from bend constraints by using four
-  non-conflicting constraint colors.
-- `KEEP LENGTH` and the Body hard guard now preserve every configured
-  `Root Locked Points` joint at the evaluated pose.
-- Runtime caches now restore the original Curves data outside the cached frame
-  range before Blender evaluates existing animation.
-- Runtime caches are isolated by Blend file and are cleared safely when a file
-  is loaded or saved under another name.
-- Runtime caches are invalidated safely when Curves point counts or curve span
-  layouts change.
-
-## 0.7.14 Release
-
-- Public source labels are English; displayed localization is handled by
-  Blender's UI translation system.
-- `Iterations` defaults to `30` for stiff straight-hair tests.
-- Completed frames are shown in the viewport during simulation.
-- Yurameki Body proxy colliders are hidden in the viewport after creation or
-  reuse.
-- The 0.7.13 Body FK hard repair remains unchanged to avoid result drift.

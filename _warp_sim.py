@@ -35,24 +35,20 @@ except ImportError:  # allow direct import when not loaded as a package
     import _cosserat
 
 
-# Calibration from the UI compliance knobs to Cosserat rod stiffnesses. The two
-# knobs stay meaningful ("higher compliance = softer"), but the Darboux bend
-# energy lives on a very different scale from the retired XPBD bend-distance
-# constraint, so bend needs its own scale to land in a usable hair range. With
-# the default UI exponents (stretch 1e-2, bend 1e-5) these give k_ss = 1e4
-# (near-inextensible) and k_bt = 1e-3 (moderate hair bending).
-K_STRETCH_SCALE = 100.0     # k_ss = K_STRETCH_SCALE / stretch_compliance
-K_BEND_SCALE = 1.0e-8       # k_bt = K_BEND_SCALE / bend_compliance
+# Cosserat rod stiffnesses.
+#
+# Bend/twist stiffness ``k_bt`` is the primary hair control and is exposed in the
+# UI as "Bend Stiffness" (higher = stiffer/straighter, lower = floppier/whippier).
+#
+# Stretch/shear stiffness ``k_ss`` keeps each segment at rest length. Because the
+# position solve is an *exact* tridiagonal minimiser, the rod is effectively
+# inextensible for any large ``k_ss``, so this is fixed here rather than exposed
+# as a near-inert knob. It only needs to stay well above ``k_bt`` so the segment
+# tangent tracks the material frame (no shear); 1e4 does that for hair.
+STRETCH_STIFFNESS = 1.0e4   # k_ss (stretch/shear), fixed; rod stays at rest length
 ORIENT_GN_DAMPING = 1.0e-7  # Levenberg damping on the 3x3 orientation solve
 ORIENT_RELAXATION = 1.0     # relaxation on each quaternion angular update
 ORIENT_MAX_OMEGA = 0.5      # clamp on |omega| per orientation sweep (radians)
-
-
-def _rod_stiffness(stretch_compliance: float, bend_compliance: float) -> tuple[float, float]:
-    """Map UI compliance values to Cosserat stretch/shear and bend/twist stiffness."""
-    k_ss = K_STRETCH_SCALE / max(float(stretch_compliance), 1.0e-12)
-    k_bt = K_BEND_SCALE / max(float(bend_compliance), 1.0e-12)
-    return k_ss, k_bt
 
 
 @dataclass
@@ -2057,17 +2053,16 @@ class WarpJointSimulator:
         return float(np.max(np.linalg.norm(motion, axis=1)) * 1000.0) if len(motion) else 0.0
 
     def _solve_constraints(self, dt: float, iterations: int,
-                           stretch_compliance: float,
-                           bend_compliance: float) -> None:
+                           k_ss: float, k_bt: float) -> None:
         """Stable Cosserat elastic-rod solve on the current ``predicted`` state.
 
         Alternates an exact per-strand tridiagonal position solve (orientations
         fixed) with a quasi-static local Gauss-Newton orientation sweep
-        (positions fixed). The inertial target ``y`` is captured once from the
-        current ``predicted`` state, so this both drives the main gravity solve
-        and re-satisfies the rod after collision moves points.
+        (positions fixed). ``k_ss`` is the stretch/shear stiffness and ``k_bt``
+        the bend/twist stiffness. The inertial target ``y`` is captured once from
+        the current ``predicted`` state, so this both drives the main gravity
+        solve and re-satisfies the rod after collision moves points.
         """
-        k_ss, k_bt = _rod_stiffness(stretch_compliance, bend_compliance)
         inv_dt2 = 1.0 / max(float(dt) * float(dt), 1.0e-12)
         wp.copy(self.inertial, self.predicted)
         for _ in range(max(1, int(iterations))):
@@ -2289,8 +2284,8 @@ class WarpJointSimulator:
         damping: float,
         max_velocity: float,
         iterations: int,
-        stretch_compliance: float,
-        bend_compliance: float,
+        stretch_stiffness: float,
+        bend_stiffness: float,
         collision_margin: float,
         collision_search: float,
         collision_max_correction: float,
@@ -2332,7 +2327,7 @@ class WarpJointSimulator:
                 ],
                 device=self.device,
             )
-            self._solve_constraints(dt, iterations, stretch_compliance, bend_compliance)
+            self._solve_constraints(dt, iterations, stretch_stiffness, bend_stiffness)
             wp.launch(
                 _clear_contact_mask_kernel,
                 dim=self.n_total,
@@ -2343,7 +2338,7 @@ class WarpJointSimulator:
                           collision_max_correction, collision_response,
                           True, collision_passes)
             for _ in range(max(0, int(post_collision_iterations))):
-                self._solve_constraints(dt, 1, stretch_compliance, bend_compliance)
+                self._solve_constraints(dt, 1, stretch_stiffness, bend_stiffness)
                 self._collide(meshes, collision_margin, collision_search,
                               collision_max_correction, collision_response,
                               False, collision_passes)
@@ -2353,7 +2348,7 @@ class WarpJointSimulator:
             # this restores length with minimal re-penetration. This is what
             # makes the FK "keep length" reconnection unnecessary.
             self._solve_constraints(dt, max(2, int(post_collision_iterations)),
-                                    stretch_compliance, bend_compliance)
+                                    stretch_stiffness, bend_stiffness)
             wp.launch(
                 _derive_velocity_kernel,
                 dim=self.n_total,
@@ -2413,8 +2408,7 @@ def simulate(
     max_velocity_mps: float,
     particle_mass: float,
     iterations: int,
-    stretch_compliance: float,
-    bend_compliance: float,
+    bend_stiffness: float,
     collision_margin_m: float,
     collision_search_m: float,
     collision_max_correction_m: float,
@@ -2555,8 +2549,8 @@ def simulate(
                 damping,
                 float(max_velocity_mps),
                 int(iterations),
-                float(stretch_compliance),
-                float(bend_compliance),
+                float(STRETCH_STIFFNESS),
+                float(bend_stiffness),
                 float(collision_margin_m),
                 float(collision_search_m),
                 float(collision_max_correction_m),
