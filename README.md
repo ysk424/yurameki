@@ -1,7 +1,10 @@
-# Yurameki 0.7.17
+# Yurameki2 0.2.0
 
 Yurameki is a Blender extension for simulating VR-character-style long straight
-hair with NVIDIA Warp.
+hair with NVIDIA Warp. Each strand is solved as a Stable Cosserat elastic rod:
+per-segment quaternion frames with stretch/shear and bend/twist energies. The
+stretch/shear energy keeps every segment at rest length intrinsically, which
+replaces the earlier "XPBD solve, then reconnect the rod by FK" pipeline.
 
 Tokoya owns planting, cutting, reset, and `Settle Hair Back`. Yurameki starts
 from that already-groomed Curves object and simulates motion only.
@@ -29,8 +32,9 @@ dist/yurameki-0.7.17.zip
 - Do not resample hair into 1 cm cylinder chains.
 - Keep the first `Root Locked Points` joints of every strand constrained to the
   evaluated Curves pose. The default is `3`.
-- Let the remaining joints move under gravity, damping, stretch distance
-  constraints, bend constraints, and Warp Mesh collision.
+- Let the remaining joints move as a Stable Cosserat elastic rod under gravity,
+  damping, stretch/shear and bend/twist rod energies, and Warp Mesh collision.
+  The rod preserves segment length, so no FK reconnection is required.
 - Keep automatic substeps based on constrained-point motion plus estimated
   gravity/velocity motion of free joints.
 - Use a filled Body proxy when needed; keep Clothes as an evaluated mesh so
@@ -107,22 +111,25 @@ strand's straight continuation before falling back to a seed-ray escape point.
 - `Guide Decimation`: simulate one guide strand for every N strands, then
   interpolate the full Curves cache. `1` simulates all strands; `100` simulates
   about one percent of the strands.
-- `KEEP LENGTH`: rebuild every simulated strand from its frame-1 segment
-  lengths before live preview, cache output, final preview, or keyframe baking.
-  The complete locked prefix stays at the evaluated pose; later joints are
-  FK-rebuilt along the simulated rod directions, and the corrected guide state
-  is fed back into the next frame.
+- `KEEP LENGTH`: redundant safety pass. The Cosserat rod already preserves
+  segment length (the reconnection correction is a near-identity, well under
+  `0.001 mm`), so this no longer does the length work it did under XPBD. It stays
+  default-on because the CPU Body FK hard repair reuses the same frame-1 rest
+  lengths; turning it off runs the pure rod with only the Body seed guard.
 - `Gravity m/s2`: Warp-style acceleration vector.
 - `Damping`: velocity damping after prediction.
 - `Max Velocity m/s`: speed limit for free joints. `0` disables the clamp.
 - `Particle Mass g`: mass used for inverse mass of free joints. The default is
   `0.01 g`.
-- `Iterations`: CUDA Warp distance/bend constraint iterations. The default is
-  `20`, and the UI allows up to `256`.
-- `Stretch Compliance log10`: base-10 exponent for XPBD-style compliance of
-  adjacent joint lengths. The default `-2` means `1e-2`.
-- `Bend Compliance log10`: base-10 exponent for XPBD-style compliance of
-  two-joint bend distances. `-5` means `1e-5`.
+- `Iterations`: Cosserat rod solver outer iterations (each does one exact
+  tridiagonal position solve plus one orientation sweep). The default is `20`,
+  and the UI allows up to `256`.
+- `Stretch Compliance log10`: base-10 exponent controlling stretch/shear rod
+  stiffness `k_ss = 100 / compliance`. The default `-2` (`1e-2`) gives
+  `k_ss = 1e4`, effectively inextensible. Lower is stiffer.
+- `Bend Compliance log10`: base-10 exponent controlling bend/twist rod stiffness
+  `k_bt = 1e-8 / compliance`. The default `-5` (`1e-5`) gives `k_bt = 1e-3`,
+  moderate hair bending. Higher (toward `0`) is floppier; lower is stiffer.
 - `Collision Margin mm`: target separation from collider mesh.
 - `Collision Search mm`: nearest-surface search radius. The default is wide
   enough for Body inside/outside repair, while each correction step is clamped

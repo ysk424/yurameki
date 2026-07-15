@@ -1,9 +1,18 @@
-"""NVIDIA Warp joint-chain simulation for Yurameki.
+"""NVIDIA Warp elastic-rod simulation for Yurameki.
 
 This path intentionally uses the existing Blender Curves joints. It does not
 resample into cylinders. The first N points of every strand are kinematic
 constraints following the evaluated Curves shape; the remaining points are
-simulated with distance, bend, gravity, damping, and Warp Mesh collision.
+simulated as a Stable Cosserat elastic rod (per-segment quaternion frames with
+stretch/shear and bend/twist energies) under gravity, damping, and Warp Mesh
+collision.
+
+The Cosserat stretch/shear energy couples each segment vector to its frame
+tangent, so the rod stays at rest length intrinsically. That replaces the old
+XPBD distance/bend constraints together with the FK "keep length" reconnection
+that was previously needed to restore segment lengths after an XPBD solve. See
+``_cosserat.py`` for the solver core and ``tools/validate_cosserat.py`` for its
+finite-difference and length-preservation validation.
 """
 
 from __future__ import annotations
@@ -19,6 +28,31 @@ import bpy
 from mathutils import Vector
 import numpy as np
 import warp as wp
+
+try:
+    from . import _cosserat
+except ImportError:  # allow direct import when not loaded as a package
+    import _cosserat
+
+
+# Calibration from the UI compliance knobs to Cosserat rod stiffnesses. The two
+# knobs stay meaningful ("higher compliance = softer"), but the Darboux bend
+# energy lives on a very different scale from the retired XPBD bend-distance
+# constraint, so bend needs its own scale to land in a usable hair range. With
+# the default UI exponents (stretch 1e-2, bend 1e-5) these give k_ss = 1e4
+# (near-inextensible) and k_bt = 1e-3 (moderate hair bending).
+K_STRETCH_SCALE = 100.0     # k_ss = K_STRETCH_SCALE / stretch_compliance
+K_BEND_SCALE = 1.0e-8       # k_bt = K_BEND_SCALE / bend_compliance
+ORIENT_GN_DAMPING = 1.0e-7  # Levenberg damping on the 3x3 orientation solve
+ORIENT_RELAXATION = 1.0     # relaxation on each quaternion angular update
+ORIENT_MAX_OMEGA = 0.5      # clamp on |omega| per orientation sweep (radians)
+
+
+def _rod_stiffness(stretch_compliance: float, bend_compliance: float) -> tuple[float, float]:
+    """Map UI compliance values to Cosserat stretch/shear and bend/twist stiffness."""
+    k_ss = K_STRETCH_SCALE / max(float(stretch_compliance), 1.0e-12)
+    k_bt = K_BEND_SCALE / max(float(bend_compliance), 1.0e-12)
+    return k_ss, k_bt
 
 
 @dataclass
@@ -154,84 +188,9 @@ def _predict_kernel(
         predicted[i] = pos[i] + v * dt
 
 
-@wp.kernel
-def _solve_distance_kernel(
-    predicted: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    rest: wp.array(dtype=float),
-    points_per_strand: int,
-    parity: int,
-    compliance: float,
-    dt: float,
-):
-    segment_id = wp.tid()
-    segments_per_strand = points_per_strand - 1
-    local = segment_id % segments_per_strand
-    if local % 2 != parity:
-        return
-
-    strand = segment_id // segments_per_strand
-    i = strand * points_per_strand + local
-    j = i + 1
-    wi = inv_mass[i]
-    wj = inv_mass[j]
-    wsum = wi + wj
-    if wsum <= 1.0e-12:
-        return
-
-    delta = predicted[i] - predicted[j]
-    length = wp.length(delta)
-    if length <= 1.0e-8:
-        return
-
-    constraint = length - rest[segment_id]
-    alpha = compliance / (dt * dt)
-    dlambda = -constraint / (wsum + alpha)
-    grad = delta / length
-    predicted[i] = predicted[i] + wi * dlambda * grad
-    predicted[j] = predicted[j] - wj * dlambda * grad
-
-
-@wp.kernel
-def _solve_bend_kernel(
-    predicted: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    rest: wp.array(dtype=float),
-    points_per_strand: int,
-    color: int,
-    compliance: float,
-    dt: float,
-):
-    if points_per_strand < 3:
-        return
-    bend_id = wp.tid()
-    bends_per_strand = points_per_strand - 2
-    local = bend_id % bends_per_strand
-    # Bend edges connect local points i and i+2, so four colors are needed
-    # to keep threads in one launch from writing the same point.
-    if local % 4 != color:
-        return
-
-    strand = bend_id // bends_per_strand
-    i = strand * points_per_strand + local
-    j = i + 2
-    wi = inv_mass[i]
-    wj = inv_mass[j]
-    wsum = wi + wj
-    if wsum <= 1.0e-12:
-        return
-
-    delta = predicted[i] - predicted[j]
-    length = wp.length(delta)
-    if length <= 1.0e-8:
-        return
-
-    constraint = length - rest[bend_id]
-    alpha = compliance / (dt * dt)
-    dlambda = -constraint / (wsum + alpha)
-    grad = delta / length
-    predicted[i] = predicted[i] + wi * dlambda * grad
-    predicted[j] = predicted[j] - wj * dlambda * grad
+# The former XPBD _solve_distance_kernel and _solve_bend_kernel were removed:
+# the elastic-rod stretch/shear and bend/twist energies in _cosserat.py replace
+# both the soft distance/bend constraints and the FK "keep length" reconnection.
 
 
 @wp.kernel
@@ -1996,9 +1955,8 @@ class WarpJointSimulator:
         self.n_total = int(len(init_positions))
         self.n_strands = self.n_total // self.pps
         self.n_segments = self.n_strands * (self.pps - 1)
-        self.n_bends = self.n_strands * max(self.pps - 2, 0)
         self.inv_mass_np = _inverse_mass(self.n_strands, self.pps, root_locked_points)
-        self.seg_rest_np, self.bend_rest_np = _rest_lengths(init_positions, self.pps)
+        self.seg_rest_np, _bend_rest_np = _rest_lengths(init_positions, self.pps)
 
         positions = np.ascontiguousarray(init_positions, dtype=np.float32)
         inv_mass = self.inv_mass_np / max(float(particle_mass), 1.0e-8)
@@ -2010,7 +1968,17 @@ class WarpJointSimulator:
         self.target_end = wp.array(positions, dtype=wp.vec3, device=self.device)
         self.inv_mass = wp.array(inv_mass, dtype=float, device=self.device)
         self.segment_rest = wp.array(self.seg_rest_np, dtype=float, device=self.device)
-        self.bend_rest = wp.array(self.bend_rest_np, dtype=float, device=self.device)
+
+        # Cosserat elastic-rod state: one quaternion frame per segment, rest
+        # Darboux vectors per interior segment pair, and the VBD position solve
+        # workspace (inertial target and per-strand tridiagonal scratch).
+        quats, darboux_rest, _seg_rest = _cosserat.init_cosserat(positions, self.pps)
+        self.orient = wp.array(quats, dtype=wp.quat, device=self.device)
+        self.darboux_rest = wp.array(darboux_rest, dtype=wp.vec3, device=self.device)
+        self.inertial = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+        self.pos_tc = wp.zeros(self.n_total, dtype=float, device=self.device)
+        self.pos_td = wp.zeros(self.n_total, dtype=wp.vec3, device=self.device)
+
         self.contact_mask = wp.zeros(self.n_total, dtype=wp.int32, device=self.device)
         self.frame_contact_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
         self.post_active_strands = wp.zeros(self.n_strands, dtype=wp.int32, device=self.device)
@@ -2091,38 +2059,54 @@ class WarpJointSimulator:
     def _solve_constraints(self, dt: float, iterations: int,
                            stretch_compliance: float,
                            bend_compliance: float) -> None:
+        """Stable Cosserat elastic-rod solve on the current ``predicted`` state.
+
+        Alternates an exact per-strand tridiagonal position solve (orientations
+        fixed) with a quasi-static local Gauss-Newton orientation sweep
+        (positions fixed). The inertial target ``y`` is captured once from the
+        current ``predicted`` state, so this both drives the main gravity solve
+        and re-satisfies the rod after collision moves points.
+        """
+        k_ss, k_bt = _rod_stiffness(stretch_compliance, bend_compliance)
+        inv_dt2 = 1.0 / max(float(dt) * float(dt), 1.0e-12)
+        wp.copy(self.inertial, self.predicted)
         for _ in range(max(1, int(iterations))):
+            wp.launch(
+                _cosserat.cosserat_position_tridiagonal_kernel,
+                dim=self.n_strands,
+                inputs=[
+                    self.predicted,
+                    self.inertial,
+                    self.inv_mass,
+                    self.orient,
+                    self.segment_rest,
+                    self.pos_tc,
+                    self.pos_td,
+                    self.pps,
+                    float(k_ss),
+                    float(inv_dt2),
+                ],
+                device=self.device,
+            )
             for parity in (0, 1):
                 wp.launch(
-                    _solve_distance_kernel,
+                    _cosserat.cosserat_orientation_kernel,
                     dim=self.n_segments,
                     inputs=[
                         self.predicted,
-                        self.inv_mass,
+                        self.orient,
+                        self.darboux_rest,
                         self.segment_rest,
                         self.pps,
                         parity,
-                        float(stretch_compliance),
-                        float(dt),
+                        float(k_ss),
+                        float(k_bt),
+                        float(ORIENT_GN_DAMPING),
+                        float(ORIENT_RELAXATION),
+                        float(ORIENT_MAX_OMEGA),
                     ],
                     device=self.device,
                 )
-            if self.n_bends > 0 and bend_compliance >= 0.0:
-                for color in range(4):
-                    wp.launch(
-                        _solve_bend_kernel,
-                        dim=self.n_bends,
-                        inputs=[
-                            self.predicted,
-                            self.inv_mass,
-                            self.bend_rest,
-                            self.pps,
-                            color,
-                            float(bend_compliance),
-                            float(dt),
-                        ],
-                        device=self.device,
-                    )
 
     def _collide(self, meshes: ColliderMeshSet, margin: float, search_distance: float,
                  max_correction: float, collision_response: float,
@@ -2363,6 +2347,13 @@ class WarpJointSimulator:
                 self._collide(meshes, collision_margin, collision_search,
                               collision_max_correction, collision_response,
                               False, collision_passes)
+            # Collision pushed points last, which breaks segment length; finish
+            # with a rod solve so the committed state is length-correct. The weak
+            # inertia term anchors it to the just-collided (pushed-out) shape, so
+            # this restores length with minimal re-penetration. This is what
+            # makes the FK "keep length" reconnection unnecessary.
+            self._solve_constraints(dt, max(2, int(post_collision_iterations)),
+                                    stretch_compliance, bend_compliance)
             wp.launch(
                 _derive_velocity_kernel,
                 dim=self.n_total,

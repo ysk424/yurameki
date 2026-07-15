@@ -2,13 +2,56 @@
 
 Status: public release.
 
-Current version: 0.7.17.
+Current version: 0.2.0 (Yurameki2 line).
 
 Branch: custom-cpp-cuda.
 
 Current direction: use NVIDIA Warp through its Python kernel, array, and Mesh
 query APIs. The native C++ CUDA cylinder-chain path is no longer part of the
 release extension package.
+
+## 0.2.0 Stable Cosserat elastic-rod solver
+
+- Replaced the XPBD distance/bend constraint solve **and** the FK "keep length"
+  reconnection with a Stable Cosserat elastic-rod solver (`_cosserat.py`). Hair
+  is a rod, so this uses the rod core of Stable Cosserat Rods directly (no cloth
+  warp/weft lattice or membrane). Each segment carries a quaternion material
+  frame; the stretch/shear energy `C = (p_{i+1}-p_i) - l_i*d3(q_i)` couples the
+  segment vector to its frame tangent, so the rod stays at rest length
+  intrinsically. That is why the FK reconnection is no longer required.
+- Solver structure (per substep, `Iterations` outer loops): an **exact**
+  per-strand tridiagonal position solve (Thomas algorithm; orientations fixed,
+  scalar-tridiagonal Hessian along the chain) alternated with a quasi-static
+  local Gauss-Newton orientation sweep (positions fixed, rotational inertia
+  neglected, red/black colouring, `q <- q*exp(omega)`). The report's closed-form
+  `lambda` orientation update was not used: the paper states it suppresses
+  quaternion bookkeeping, so a finite-difference-validated local Gauss-Newton
+  update that reaches the same minimiser is used instead.
+- Because the position solve is exact for the stretch/shear subproblem, segment
+  length is preserved regardless of how stiff `k_ss` is relative to inertia.
+  After collision (which moves points last and would otherwise leave the rod
+  stretched), a final rod solve restores length while its weak inertia term
+  anchors the result to the just-collided, pushed-out shape.
+- Stiffness mapping from the existing UI knobs, calibrated in `_warp_sim.py`:
+  `k_ss = 100 / stretch_compliance` and `k_bt = 1e-8 / bend_compliance`. The
+  Darboux bend energy is dimensionless and lives on a very different scale from
+  the retired XPBD bend-distance constraint, so bend needs its own scale to fall
+  in a usable hair range. Default UI exponents (stretch 1e-2, bend 1e-5) give
+  `k_ss = 1e4` (near-inextensible) and `k_bt = 1e-3` (moderate hair bending).
+- `KEEP LENGTH` is now a redundant safety pass rather than the length mechanism.
+  With the rod solver its FK correction is a near-identity: the end-to-end 6000
+  strand run reports `max_keep_length_error = 0.000138 mm`. It is kept default-on
+  because the CPU Body FK hard repair reuses the same frame-1 rest lengths; the
+  pure-rod path (`KEEP LENGTH` off) also runs and keeps the Body seed guard.
+- Validation: `tools/validate_cosserat.py` (run `python tools/validate_cosserat.py
+  cpu` or `cuda:0`) checks orientation/position gradients by finite difference,
+  that the Warp kernels reproduce an independent numpy reference, rest-state
+  stability, and a horizontal cantilever drooping under gravity with segment
+  length preserved to ~0.01% and no FK. On the live 6000-strand Lumi test scene
+  the rod holds length to <0.07% including collision (versus 11.75% before the
+  final post-collision rod solve was added).
+- Removed the XPBD `_solve_distance_kernel` and `_solve_bend_kernel` and their
+  `bend_rest`/`n_bends` arrays. `_solve_constraints` now runs the Cosserat solve.
 
 ## Current State
 

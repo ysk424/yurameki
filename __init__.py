@@ -474,7 +474,7 @@ def register():
         )
         WindowManager.yurameki_iterations = IntProperty(
             name="Iterations",
-            description="CUDA Warp distance/bend constraint iterations",
+            description="Cosserat rod solver outer iterations (position + orientation sweeps)",
             default=int(defaults.get("ITERATIONS", 20)),
             min=1,
             max=256,

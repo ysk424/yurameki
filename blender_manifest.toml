@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "yurameki2"
-version = "0.1.0"
+version = "0.2.0"
 name = "Yurameki2"
-tagline = "NVIDIA Warp long-hair simulator"
+tagline = "NVIDIA Warp elastic-rod long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
 type = "add-on"
 
@@ -24,6 +24,7 @@ paths = [
     "ui.py",
     "assistant.py",
     "_warp_sim.py",
+    "_cosserat.py",
     "collider_proxy.py",
     "yurameki_defaults.json",
     "README.md",
