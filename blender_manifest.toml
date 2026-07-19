@@ -1,13 +1,13 @@
 schema_version = "1.0.0"
 
 id = "yurameki"
-version = "1.0.0"
+version = "0.3.0"
 name = "Yurameki"
-tagline = "NVIDIA Warp elastic-rod long-hair simulator"
+tagline = "C++ OpenMP elastic-rod long-hair simulator"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
 type = "add-on"
 
-blender_version_min = "5.1.0"
+blender_version_min = "5.2.0"
 
 license = ["SPDX:MIT"]
 
@@ -19,8 +19,8 @@ platforms = ["windows-x64"]
 paths = [
     "__init__.py",
     "ui.py",
-    "_warp_sim.py",
-    "_cosserat.py",
+    "_native_sim.py",
+    "_yurameki_native_0_3_0.cp313-win_amd64.pyd",
     "yurameki_defaults.json",
     "README.md",
     "DEVELOPMENT_NOTES.md",

@@ -1,189 +1,82 @@
-# Yurameki 1.0.0
+# Yurameki 0.3.0
 
-NVIDIA Warp elastic-rod long straight-hair simulator for Blender.
-Blender 用 NVIDIA Warp 弾性ロッド・ロングストレートヘア シミュレータ。
+Blender 5.2+ 向けの C++20 / OpenMP ロングヘア・シミュレータです。Blender
+Curves の各カーブを番号順のストランドとして扱い、各隣接点を1本のロッドとします。
+UI、Depsgraph、Curves 入出力だけを Python に残し、数値計算は
+`_yurameki_native_0_3_0` が行います。
 
-License: MIT. Requires an NVIDIA CUDA GPU. / ライセンス: MIT。NVIDIA CUDA GPU が必要です。
+## インストール
 
----
+Blender の拡張機能インストーラから `dist/yurameki-0.3.0.zip` を指定します。このZIPには
+Windows x64 / Blender 5.2 / CPython 3.13用のネイティブモジュールが含まれます。
 
-## 日本語
+## シミュレーションの順序
 
-Yurameki は、VR キャラクター風のロングストレートヘアを NVIDIA Warp で揺らす
-Blender 拡張です。各ストランドを **Stable Cosserat 弾性ロッド**として解きます
-（セグメントごとのクォータニオンフレーム＋伸び/せん断・曲げ/ねじれエネルギー）。
-伸び/せん断エネルギーが各セグメントを本来の長さに保つため、従来の「XPBD で解いて
-FK で繋ぎ直す」処理は不要です。
+1. 対象範囲、フレーム1、元の表示フレームについて、評価済み Curves を先に読みます。
+2. **フレーム1の全ストランド・全ロッド長、関節角、曲率変動**を不変な基準値として
+   C++ に保存します。開始フレームが1以外でも基準は変わりません。
+3. 各フレームをサブステップ化し、ガイドストランドの Stable Cosserat rod を解きます。
+   `Guide Decimation > 1` なら近い最大4本のガイド変位から全ストランドを復元します。
+4. Body は面法線の符号付き距離、Clothes は両面距離として、点とロッド区間を BVH で
+   衝突判定します。
+5. 各ストランドについて次の有限ループを実行します。
+   - 形状評価: ロッド長誤差、隣接ロッド角、フレーム1からの角度変化、曲率変動
+   - NG: 接線を局所的に平滑化し、必要ならフレーム1のロッド長へ投影
+   - 貫通評価: 点のマージン違反とロッド区間の三角形交差
+   - NG: 衝突修復、変位のストランド方向平滑化、再評価
+   - 最大反復数、改善停止回数、最良候補の保存で無限ループを防止
+6. 結果を Curves に書き、Surface Deform 等を含む評価済み結果を読み直します。変形後に
+   再び NG なら、設定回数まで C++ の整髪・貫通評価へ戻します。
+7. 最終的に実際に Curves へ書かれたローカル座標をキャッシュまたはキーフレームへ保存
+   します。途中停止時も計算済みフレームをランタイムキャッシュに残します。
 
-Yurameki は**すでにグルーミング済みの Blender Curves オブジェクト**を入力に取り、
-**動きだけ**をシミュレートします（植毛・カット・整形は Tokoya 側の役割）。
+## なめらかさの評価
 
-### 動作要件
-
-- Blender 5.1 以降（Windows x64）
-- **NVIDIA CUDA 対応 GPU**（`cuda:0` で動作します）
-- Blender の Python 環境から NVIDIA `warp-lang` を import できること
-
-### インストール
-
-Blender の拡張機能インストーラからリリース ZIP を入れてください:
-
-```text
-dist/yurameki-1.0.0.zip
-```
-
-### 使い方
-
-N パネル（3D ビューポート右の「Yurameki」タブ）で操作します。
-
-1. **Input** — スポイトで対象を指定
-   - `Hair`: シミュレートする Curves
-   - `Body`: 衝突用のボディメッシュ（元メッシュをそのまま使用）
-   - `Clothes`: 任意の衣装メッシュ
-2. **Simulate** — フレーム範囲を計算
-   - **各フレームを計算しながらその場で描画**します。見ながら確認でき、
-     結果が NG なら **Stop ボタン**または **Esc** で中断できます。
-   - 中断しても**それまでに計算済みのフレームは残ります**（そのまま再生・Bake 可能）。
-   - `Start Frame` は初期状態。シミュレートは `Start Frame + 1` から
-     `End Frame` まで（`End Frame > Start Frame`）。
-3. **Bake Cache** — ランタイムキャッシュを Curves の位置キーフレームに焼き込み
-
-出力モード（`Output`）:
-- `Runtime Cache`（既定）: 再生をキャッシュで保持（大量の F-Curve を作らない）
-- `Position Keyframes`: Curves の `position` F-Curve に直接ベイク
-- `Final Preview`: 最終フレームの静止形状だけを表示
-
-### 適応ルートロック（Adaptive Root Lock）
-
-頭が突っ込んでくる側の毛は、頭蓋骨と髪の抵抗で押さえられて動きにくくなります。
-Yurameki はこれを模し、**頭が進んでいる方向側**のストランドについて、根本から
-**耳たぶの高さまでの関節をキネマティック（頭に追従）化**します。突っ込まれる側の
-毛は頭に乗って弾かれず、後ろ側の毛は自由に揺れます。
-
-- トリガーは頭の**運動の向きのみ**（速度の大きさは無視）。ゆっくりした動きでも作動。
-- 頭の進行方向 `v_head` は頭ボーン先端（頭頂）の速度で測るため、うなずき・首振り
-  （回転）も拾います。
-- 進行方向を軸にした 3D 円錐で選別（75° 以内はフル、90° まで滑らかに減衰）。
-- 耳たぶ基準は頭ボーン付近の顎関節（`CC_Base_JawRoot`、無ければ目ボーン）。
-- ロック数はベースラインの `Root Locked Points`（既定 3）を下回りません。
-
-### チューニング
-
-各項目には N パネル上にツールチップがあります。動きを決める主なもの:
-
-- `Bend Stiffness log10`: 曲げ/ねじれ剛性。高いほど硬く直毛的、低いほど柔らかく暴れる。
-- `Particle Mass g`: 運動量。低いほど軽快でオーバーシュート少、高いほど大きく揺れる。
-- `Damping`: 全体の減衰（すべての動きの収束速度）。
-- `Internal Damping`: ストランド内部のひずみ速度減衰。リンギング・ジッタ・毛羽立ちを
-  抑えつつ、頭と重力による受動的な追従は残します。`Damping` を上げるより先にこちらを。
-
-伸びは固定（ロッドは伸縮しない）ため、伸びのつまみはありません。
-
-### 衝突について
-
-Warp Mesh のレイ／最近傍クエリを使用。Body と Clothes は別々の Warp メッシュ:
-Body は最近傍面の**符号付き**押し出し（法線符号による内外判定）、Clothes は両面の
-符号なし押し出し。セグメント補正はクランプされ、1 パスで端点がキャラクターを
-横断してテレポートすることはありません。毛同士の衝突は未実装です。
-
-Body には**元のメッシュをそのまま**使います（穴を塞ぐプロキシは廃止）。頭皮の外側を
-覆う髪では、法線符号の内外判定で十分に正しく動作します。
-
-### ライセンス
-
-MIT License. Copyright (c) 2026 Yoshihiko Tsukamoto. 同梱の `LICENSE` を参照。
-
----
-
-## English
-
-Yurameki is a Blender extension that simulates VR-character-style long straight
-hair with NVIDIA Warp. Each strand is solved as a **Stable Cosserat elastic rod**
-(per-segment quaternion frames with stretch/shear and bend/twist energies). The
-stretch/shear energy keeps every segment at rest length intrinsically, so the old
-"XPBD solve, then reconnect the rod by FK" step is unnecessary.
-
-Yurameki takes an **already-groomed Blender Curves object** as input and simulates
-**motion only** (planting, cutting, and styling belong to Tokoya).
-
-### Requirements
-
-- Blender 5.1 or newer (Windows x64)
-- An **NVIDIA CUDA-capable GPU** (it runs on `cuda:0`)
-- The Blender Python environment must be able to import NVIDIA `warp-lang`
-
-### Installation
-
-Install the release ZIP through Blender's extension/add-on installer:
+点列を単にベジェカーブと仮定して微分するのではなく、Blender Curves の制御点列から
+正規化ロッド接線 `t[i]` を作ります。一次差分 `b[i] = t[i+1] - t[i]` が曲率に相当し、
+二次差分の平均絶対量
 
 ```text
-dist/yurameki-1.0.0.zip
+roughness = sum(length(b[i+1] - b[i])) / number_of_differences
 ```
 
-### Usage
+を乱れの指標にします。フレーム1自身の値に係数を掛けた上限と絶対下限を併用し、
+意図された曲率を残しながら急な二次差分を検出します。これに、最大関節角、フレーム1からの角度変化、
+ロッド長誤差を組み合わせて OK/NG を判定します。したがって「絶対値を合計する」という
+発想は使っていますが、ワールド座標の微分値そのものではなく、弧長に依存しにくい接線
+とその差分を使います。
 
-Everything lives in the N-panel ("Yurameki" tab in the 3D viewport).
+## 要件と開発ビルド
 
-1. **Input** — pick objects with the eyedropper fields
-   - `Hair`: the Curves to simulate
-   - `Body`: the body mesh collider (used directly)
-   - `Clothes`: an optional garment mesh
-2. **Simulate** — bake the frame range
-   - **Each frame is drawn as it is computed**, so you can watch the result and,
-     if it looks wrong, end early with the **Stop** button or **Esc**.
-   - Stopping **keeps the frames computed so far** (still playable and bakeable).
-   - `Start Frame` is the unchanged initial state; simulation runs from
-     `Start Frame + 1` through `End Frame` (`End Frame > Start Frame`).
-3. **Bake Cache** — convert the runtime cache to Curves position keyframes
+- Windows x64
+- Blender 5.2 以降。現在の開発 ABI は Blender 5.2 / CPython 3.13
+- Visual Studio 2022、CMake 3.24+、pybind11、OpenMP
+- CUDA や `warp-lang` は不要
 
-Output modes (`Output`):
-- `Runtime Cache` (default): keeps playback in a cache instead of creating
-  millions of Curves `position` F-Curves
-- `Position Keyframes`: bakes the Curves `position` F-Curves directly
-- `Final Preview`: shows only the static final-frame shape
+```powershell
+$python = 'C:\Users\azoo\git\build_windows_Release_x64_vc17_Release\bin\5.2\python\bin\python.exe'
+$pythonLib = 'C:\Users\azoo\git\blender\lib\windows_x64\python\313\libs\python313.lib'
+cmake -S native -B build/native -G 'Visual Studio 17 2022' -A x64 `
+  "-DPython3_EXECUTABLE:FILEPATH=$python" `
+  "-DPython3_LIBRARY:FILEPATH=$pythonLib"
+cmake --build build/native --config Release
+& $python tools/validate_native.py
+```
 
-### Adaptive Root Lock
+生成物はアドオン直下の `_yurameki_native_0_3_0.cp313-win_amd64.pyd` です。この手順は
+拡張 ZIP を作りません。
 
-On the side the head is advancing toward, the skull and drag pin the hair so it
-cannot move. Yurameki models this: for strands in the head's direction of motion,
-it makes the joints from the root **down to the earlobe line** kinematic (they ride
-the head). Hair the head drives into is pinned and cannot be flung, while trailing
-hair keeps swinging.
+## UI
 
-- The trigger is the head's **direction of motion only** (magnitude ignored), so a
-  slow turn still engages it.
-- The head advance velocity `v_head` is sampled at the head-bone tip (top of skull),
-  so nods and head-shakes (rotation) register too.
-- Strands are selected by a 3D cone around `v_head` (full lock within 75°, a soft
-  skirt to 90°).
-- The earlobe line uses the jaw-hinge bone `CC_Base_JawRoot` (eye bones as a
-  fallback). The lock never drops below the `Root Locked Points` baseline (default 3).
+- `Input`: Hair Curves、Body、任意の Clothes
+- `Simulate`: フレーム範囲、出力、ガイド間引き、ロッド長保持
+- `Elastic Rod`: 質量、重力、減衰、曲げ剛性、反復
+- `Collision`: マージン、探索距離、補正上限、衝突後反復
+- `Per-frame Grooming`: 評価閾値、整髪強度、収束と停滞の上限
+- `Compute`: OpenMP スレッド数。0 は論理プロセッサをすべて使用
 
-### Tuning
+Body と Clothes の衝突は実装済みです。毛同士の衝突は未実装です。Blender の RNA と
+Depsgraph はメインスレッドだけから操作し、OpenMP は独立したストランド、BVH の
+三角形準備とクエリ、評価・整髪に使用します。BVH の木構築自体は逐次処理です。
 
-Every control has a tooltip. The ones that shape motion:
-
-- `Bend Stiffness log10`: rod bend/twist stiffness (higher = stiffer/straighter).
-- `Particle Mass g`: momentum (lower = lighter/snappier, less overshoot).
-- `Damping`: how quickly all motion settles.
-- `Internal Damping`: strain-rate damping inside a strand; removes ringing, jitter,
-  and frizz while keeping the passive follow-through. Prefer it over raising
-  `Damping`.
-
-Stretch is fixed (the rod is inextensible), so there is no stretch knob.
-
-### Collision
-
-Collision uses Warp Mesh ray and nearest-point queries. Body and Clothes are kept
-as separate Warp meshes: Body uses signed nearest-surface push-out (inside/outside
-from the closest-face normal), Clothes uses two-sided unsigned push-out. Segment
-corrections are clamped so an endpoint cannot teleport across the character in one
-pass. Hair-hair collision is not implemented.
-
-The Body collider is the **source mesh used directly** (the hole-capping proxy has
-been removed): the closest-face normal test is reliable for hair on the outside of
-the head.
-
-### License
-
-MIT License. Copyright (c) 2026 Yoshihiko Tsukamoto. See the bundled `LICENSE`.
+MIT License. Copyright (c) 2026 Yoshihiko Tsukamoto.

@@ -1,4 +1,4 @@
-"""Yurameki NVIDIA Warp N-panel."""
+"""Yurameki C++/OpenMP N-panel."""
 
 from __future__ import annotations
 
@@ -59,7 +59,9 @@ class YURAMEKI_PT_main(Panel):
         row = col.row(align=True)
         _prop(row, wm, "yurameki_clothes_obj")
         _operator(row, "yurameki.pick_clothes", text="", icon="EYEDROPPER")
-        _prop(col, wm, "yurameki_points_per_strand")
+        detected = col.row()
+        detected.enabled = False
+        _prop(detected, wm, "yurameki_points_per_strand")
 
         box = layout.box()
         _label(box, "Simulate")
@@ -106,6 +108,25 @@ class YURAMEKI_PT_main(Panel):
         _prop(col, wm, "yurameki_post_collision_iterations")
         _prop(col, wm, "yurameki_auto_substep_mm")
         _prop(col, wm, "yurameki_max_substeps")
+
+        box = layout.box()
+        _label(box, "Per-frame Grooming")
+        col = box.column(align=True)
+        _prop(col, wm, "yurameki_settle_iterations")
+        _prop(col, wm, "yurameki_settle_relaxation")
+        _prop(col, wm, "yurameki_groom_strength")
+        _prop(col, wm, "yurameki_groom_repair_strength")
+        _prop(col, wm, "yurameki_groom_length_tolerance_mm")
+        _prop(col, wm, "yurameki_groom_angle_change_deg")
+        _prop(col, wm, "yurameki_groom_fold_deg")
+        _prop(col, wm, "yurameki_groom_roughness_factor")
+        _prop(col, wm, "yurameki_settle_stagnation")
+        _prop(col, wm, "yurameki_groom_collision_smooth_passes")
+        _prop(col, wm, "yurameki_surface_feedback_iterations")
+
+        box = layout.box()
+        _label(box, "Compute")
+        _prop(box, wm, "yurameki_openmp_threads")
 
 
 _classes = (YURAMEKI_PT_main,)

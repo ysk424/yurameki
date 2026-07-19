@@ -1,4 +1,4 @@
-"""Yurameki -- NVIDIA Warp elastic-rod long straight-hair simulator."""
+"""Yurameki -- C++/OpenMP elastic-rod long-hair simulator."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def _points_per_strand(obj):
     if min(lengths) < 3:
         raise ValueError(f"{min(lengths)} points per strand is too small")
     if len(lengths) != 1:
-        raise ValueError(f"Warp path requires uniform points per strand: {lengths[:8]}")
+        raise ValueError(f"Native path requires uniform points per strand: {lengths[:8]}")
     return int(lengths[0]), len(spans)
 
 
@@ -98,7 +98,7 @@ def _compute_colliders(context):
 def _make_sim_generator(context):
     """Build the frame-by-frame simulation generator, or return (None, message).
 
-    The generator (``_warp_sim.simulate_iter``) yields once per computed frame so
+    The generator (``_native_sim.simulate_iter``) yields once per computed frame so
     a modal operator can step it, draw each frame, and stop early.
     """
     obj = _find_curves_obj(context)
@@ -106,15 +106,16 @@ def _make_sim_generator(context):
         return None, "Pick one Hair Curves object"
     wm = context.window_manager
     try:
-        from . import _warp_sim
+        from . import _native_sim
 
-        _points_per_strand(obj)
+        points_per_strand, _strand_count = _points_per_strand(obj)
+        wm.yurameki_points_per_strand = points_per_strand
         colliders = _compute_colliders(context)
     except ImportError as exc:
-        return None, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
+        return None, f"Yurameki native module import failed: {exc}. Build the C++ module for this Blender Python."
     except Exception as exc:
         return None, f"Simulation setup failed: {exc!r}"
-    gen = _warp_sim.simulate_iter(
+    gen = _native_sim.simulate_iter(
         obj,
         colliders,
         start_frame=int(wm.yurameki_sim_start_frame),
@@ -141,6 +142,18 @@ def _make_sim_generator(context):
         keep_length=bool(wm.yurameki_keep_length),
         internal_damping=float(wm.yurameki_internal_damping),
         collision_smoothing=float(wm.yurameki_collision_smoothing),
+        settle_iterations=int(wm.yurameki_settle_iterations),
+        settle_relaxation=float(wm.yurameki_settle_relaxation),
+        groom_strength=float(wm.yurameki_groom_strength),
+        groom_repair_strength=float(wm.yurameki_groom_repair_strength),
+        length_tolerance_m=float(wm.yurameki_groom_length_tolerance_mm) * 1.0e-3,
+        angle_change_limit_deg=float(wm.yurameki_groom_angle_change_deg),
+        fold_limit_deg=float(wm.yurameki_groom_fold_deg),
+        roughness_factor=float(wm.yurameki_groom_roughness_factor),
+        settle_stagnation=int(wm.yurameki_settle_stagnation),
+        collision_smooth_passes=int(wm.yurameki_groom_collision_smooth_passes),
+        surface_feedback_iterations=int(wm.yurameki_surface_feedback_iterations),
+        openmp_threads=int(wm.yurameki_openmp_threads),
     )
     return gen, None
 
@@ -157,19 +170,23 @@ def _format_sim_stats(stats):
         f"adaptLock={'on' if stats.adaptive_root_lock else 'off'}"
         f"(max{stats.adaptive_lock_max_points},sf{stats.adaptive_lock_strand_frames}), "
         f"keep_len={'on' if stats.keep_length else 'off'} "
-        f"(F{stats.keep_length_source_frame}, err={stats.max_keep_length_error_mm:.6f}mm), "
+        f"(F{stats.keep_length_source_frame}, finalErr={stats.max_keep_length_error_mm:.6f}mm, "
+        f"preGroomErr={stats.max_pre_groom_length_error_mm:.6f}mm), "
         f"auto_move={stats.max_auto_move_mm:.3f}mm, "
         f"vmax={stats.max_velocity_mps:.2f}m/s, "
         f"corr<={stats.collision_max_correction_mm:.2f}mm, "
         f"resp={stats.collision_response:.2f}, "
         f"contact_damp={stats.collision_velocity_damping:.2f}, "
-        f"postKL={stats.post_keep_collision_hits}/{stats.post_keep_active_strands}, "
-        f"bodyGuard={stats.body_hard_guard_points}, "
-        f"bodyFK={stats.body_fk_repair_strands}/{stats.body_fk_repair_points}, "
-        f"escape={stats.body_fk_escape_points}, fail={stats.body_fk_failed_points}, "
-        f"vz={stats.body_fk_velocity_zeroed}, "
+        f"groomed={stats.groomed_strand_frames}, "
+        f"settleFail={stats.settle_failed_strand_frames}, "
+        f"shapeBad={stats.shape_bad_strand_frames}, rough={stats.rough_strand_frames}, "
+        f"lengthBad={stats.length_bad_strand_frames}strands/{stats.length_bad_rod_frames}rods, "
+        f"folded={stats.folded_strand_frames}, "
+        f"collisionBad={stats.collision_bad_strand_frames}, "
+        f"unresolved={stats.unresolved_shape_strand_frames}/{stats.unresolved_collision_strand_frames}, "
+        f"settleIter<={stats.max_settle_iterations}, feedback={stats.surface_feedback_repairs}, "
         f"hits={stats.total_hits}, tris={stats.n_triangles_last}, "
-        f"{stats.device} sm_{stats.device_arch}, "
+        f"{stats.device} ({stats.device_name}), "
         f"bake={stats.bake_mode.lower()}{cache_text}, time={stats.elapsed_sec:.2f}s"
     )
 
@@ -179,11 +196,11 @@ def _bake_cache(context):
     if obj is None:
         return False, "Pick one Hair Curves object"
     try:
-        from . import _warp_sim
+        from . import _native_sim
 
-        stats = _warp_sim.bake_runtime_cache(obj)
+        stats = _native_sim.bake_runtime_cache(obj)
     except ImportError as exc:
-        return False, f"Warp import failed: {exc}. Install NVIDIA warp-lang for Blender Python."
+        return False, f"Yurameki native module import failed: {exc}"
     except Exception as exc:
         return False, f"Bake cache failed: {exc!r}"
     return (
@@ -204,7 +221,13 @@ class YURAMEKI_OT_pick_curves(Operator):
         if obj is None or obj.type != "CURVES":
             self.report({"ERROR"}, "Active object must be Curves")
             return {"CANCELLED"}
+        try:
+            points_per_strand, _strand_count = _points_per_strand(obj)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         context.window_manager.yurameki_curves_obj = obj.name
+        context.window_manager.yurameki_points_per_strand = points_per_strand
         self.report({"INFO"}, f"Hair Curves: {obj.name}")
         return {"FINISHED"}
 
@@ -243,7 +266,7 @@ class YURAMEKI_OT_simulate(Operator):
     bl_idname = "yurameki.simulate"
     bl_label = "Simulate"
     bl_description = (
-        "Run the NVIDIA Warp simulation. Each frame is drawn as it is computed so "
+        "Run the C++/OpenMP simulation. Each frame is drawn as it is computed so "
         "you can watch it; press Stop or Esc to end early and keep the frames so far"
     )
 
@@ -400,6 +423,18 @@ _PROP_NAMES = (
     "yurameki_guide_decimation",
     "yurameki_keep_length",
     "yurameki_sim_bake_mode",
+    "yurameki_settle_iterations",
+    "yurameki_settle_relaxation",
+    "yurameki_groom_strength",
+    "yurameki_groom_repair_strength",
+    "yurameki_groom_length_tolerance_mm",
+    "yurameki_groom_angle_change_deg",
+    "yurameki_groom_fold_deg",
+    "yurameki_groom_roughness_factor",
+    "yurameki_settle_stagnation",
+    "yurameki_groom_collision_smooth_passes",
+    "yurameki_surface_feedback_iterations",
+    "yurameki_openmp_threads",
 )
 
 
@@ -484,7 +519,7 @@ def register():
                 "As the head advances into a strand, lock (make kinematic) the "
                 "crown-side joints of that strand so it rides the skull instead "
                 "of being headbutted and flung. The number of locked joints ramps "
-                "in smoothly with the head's approach speed and direction, and "
+                "smoothly with the angular relation to the head's motion, and "
                 "back out when it stops, so it costs no collision work on the "
                 "leading side. Baseline is Root Locked Points"
             ),
@@ -666,6 +701,109 @@ def register():
             default=str(defaults.get("SIM_BAKE_MODE", "CACHE")),
             options={"SKIP_SAVE"},
         )
+        WindowManager.yurameki_settle_iterations = IntProperty(
+            name="Max Settle Iterations",
+            description="Hard cap for the per-strand groom/evaluate/collision convergence loop",
+            default=int(defaults.get("SETTLE_ITERATIONS", 12)),
+            min=1,
+            max=128,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_settle_relaxation = FloatProperty(
+            name="Settle Relaxation",
+            description="Fraction of each grooming or collision repair accepted per convergence iteration",
+            default=float(defaults.get("SETTLE_RELAXATION", 0.5)),
+            min=0.01,
+            max=1.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_strength = FloatProperty(
+            name="Groom Strength",
+            description="Initial tangent smoothing strength for a strand that fails evaluation",
+            default=float(defaults.get("GROOM_STRENGTH", 0.15)),
+            min=0.0,
+            max=1.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_repair_strength = FloatProperty(
+            name="Repair Strength",
+            description="Tangent smoothing strength used after the first failed evaluation",
+            default=float(defaults.get("GROOM_REPAIR_STRENGTH", 0.4)),
+            min=0.0,
+            max=1.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_length_tolerance_mm = FloatProperty(
+            name="Length Tolerance mm",
+            description="Maximum absolute frame-1 rod-length error accepted by the evaluator",
+            default=float(defaults.get("GROOM_LENGTH_TOLERANCE_MM", 0.1)),
+            min=0.0001,
+            max=10.0,
+            precision=4,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_angle_change_deg = FloatProperty(
+            name="Curvature Change deg",
+            description="Maximum joint-angle change from frame 1 before a strand needs grooming",
+            default=float(defaults.get("GROOM_ANGLE_CHANGE_DEG", 30.0)),
+            min=0.1,
+            max=180.0,
+            precision=2,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_fold_deg = FloatProperty(
+            name="Fold Limit deg",
+            description="Maximum angle between adjacent rods before the strand is considered folded",
+            default=float(defaults.get("GROOM_FOLD_DEG", 90.0)),
+            min=1.0,
+            max=180.0,
+            precision=2,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_roughness_factor = FloatProperty(
+            name="Roughness Factor",
+            description="Multiplier on the frame-1 mean tangent-second-difference limit",
+            default=float(defaults.get("GROOM_ROUGHNESS_FACTOR", 1.25)),
+            min=0.1,
+            max=10.0,
+            precision=3,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_settle_stagnation = IntProperty(
+            name="Stagnation Limit",
+            description="Stop and keep the best candidate after this many non-improving iterations",
+            default=int(defaults.get("SETTLE_STAGNATION", 3)),
+            min=1,
+            max=32,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_groom_collision_smooth_passes = IntProperty(
+            name="Repair Smooth Passes",
+            description="How far collision-repair displacement is diffused along a strand",
+            default=int(defaults.get("GROOM_COLLISION_SMOOTH_PASSES", 4)),
+            min=0,
+            max=32,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_surface_feedback_iterations = IntProperty(
+            name="Surface Feedback",
+            description="Maximum write/evaluate/re-groom cycles for modifier feedback per frame",
+            default=int(defaults.get("SURFACE_FEEDBACK_ITERATIONS", 4)),
+            min=1,
+            max=32,
+            options={"SKIP_SAVE"},
+        )
+        WindowManager.yurameki_openmp_threads = IntProperty(
+            name="OpenMP Threads",
+            description="Worker threads; 0 uses all logical processors",
+            default=int(defaults.get("OPENMP_THREADS", 0)),
+            min=0,
+            max=256,
+            options={"SKIP_SAVE"},
+        )
         ui.register()
         ui_registered = True
     except Exception:
@@ -684,7 +822,7 @@ def register():
 
 
 def unregister():
-    mod = sys.modules.get(__name__ + "._warp_sim")
+    mod = sys.modules.get(__name__ + "._native_sim")
     if mod is not None:
         try:
             mod.unregister_cache_handler()
